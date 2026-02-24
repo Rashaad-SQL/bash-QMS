@@ -1,667 +1,2295 @@
-/* =========================================================
-   QMS – FULL SINGLE FILE BUILD (PLAIN HTML VERSION)
-   ========================================================= */
-
-/* =========================
-   GLOBAL STATE
-   ========================= */
-const state = {
-  evaluations: [],
-  templates: JSON.parse(localStorage.getItem("qms_templates")) || [],
-  notificationSettings:
-    JSON.parse(localStorage.getItem("qms_notification_settings")) || {
-      teamLeadEmail: "",
-      notifyAgents: false,
-    },
-  autoFailed: false,
-  pendingCalibration: [],
-  disputeEvalId: null,
-  agents: [],
-};
-
-/* =========================
-   GLOBAL ERROR GUARD
-   ========================= */
-window.addEventListener("error", (e) => {
-  console.error("[GLOBAL ERROR]", e?.error || e?.message || e);
-  alert("JS error: " + (e?.error?.message || e?.message || "check console"));
-});
-
-/* =========================
-   SUPABASE CONFIG
-   ========================= */
-const SUPABASE_URL = "https://ceebnevkectnlvjapidg.supabase.co";
-const SUPABASE_ANON_KEY =
-  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNlZWJuZXZrZWN0bmx2amFwaWRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUzNDk4NTcsImV4cCI6MjA4MDkyNTg1N30.8Z-12vrB3J_Rc3Jht-YeaG2NFTiFHBisqH3Yll-_cts";
-
-const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
-
-/* =========================
-   EMAILJS INIT
-   ========================= */
-function initEmailJS() {
-  if (!window.emailjs) {
-    console.error("[EmailJS] library not loaded");
-    return false;
-  }
-  try {
-    emailjs.init("-6lNUhMst6-9ZiCof");
-    console.log("[EmailJS] initialized");
-    return true;
-  } catch (e) {
-    console.error("[EmailJS] init failed:", e);
-    return false;
-  }
-}
-
-/* =========================
-   HELPERS
-   ========================= */
-function escapeHtml(s) {
-  if (s == null) return "";
-  return String(s)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function uuid() {
-  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
-  const b = new Uint8Array(16);
-  (window.crypto || window.msCrypto).getRandomValues(b);
-  b[6] = (b[6] & 0x0f) | 0x40;
-  b[8] = (b[8] & 0x3f) | 0x80;
-  const hex = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(
-    12,
-    16
-  )}-${hex.slice(16, 20)}-${hex.slice(20)}`;
-}
-
-function getChannelName(channel) {
-  const map = { call: "Phone Call", chat: "Live Chat", email: "Email" };
-  return map[channel] || channel;
-}
-  /* =========================================================
-   SCORING + VALIDATION LOGIC
-   ========================================================= */
-
-function recomputeAutoFail() {
-  let failing = false;
-
-  document.querySelectorAll(".item.critical").forEach((item) => {
-    const noSel = !!item.querySelector(".btn.no.selected");
-    if (noSel) failing = true;
-  });
-
-  state.autoFailed = failing;
-
-  const msg = document.getElementById("autofail-message");
-  if (msg) {
-    msg.style.display = state.autoFailed ? "block" : "none";
-  }
-}
-
-function computeMaxTotal() {
-  let max = 0;
-  document.querySelectorAll(".item").forEach((item) => {
-    const w =
-      parseInt(
-        item.querySelector(".btn.yes")?.getAttribute("data-weight")
-      ) || 0;
-
-    const isNASelected = !!item.querySelector(".btn.na.selected");
-
-    if (!isNASelected) {
-      max += w;
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Bash CS QA System</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    :root{
+      --accent:#4646e8ff;
+      --accent-600:#4646e8ff;
+      --accent-50:#F0F0FF;
+      --bg:#F5F6F8;
+      --surface:#FFFFFF;
+      --text:#111827;
+      --muted:#6B7280;
+      --border:#E5E7EB;
+      --success:#22C55E;
+      --danger:#EF4444;
+      --warning:#F59E0B;
+      --radius:16px;
+      --radius-lg:22px;
+      --shadow:0 8px 30px rgba(17,24,39,.06);
     }
+
+    *{box-sizing:border-box}
+    html,body{height:100%}
+    body{
+      margin:0;
+      font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Helvetica,Arial;
+      color:var(--text);
+      background:var(--bg);
+    }
+
+    /* ===== App layout: Sidebar + Main ===== */
+    .app{
+      display:grid;
+      grid-template-columns: 280px 1fr;
+      min-height:100vh;
+      position:relative; /* ensure z-index stacking context */
+      z-index:0;
+    }
+    @media (max-width:1024px){ .app{ grid-template-columns: 1fr } .sidebar{ position:relative; width:auto; } }
+
+    /* ===== Sidebar ===== */
+    .sidebar{
+      position:sticky; top:0; height:100vh; overflow:hidden;
+      background:#000000ff;
+      border-right:1px solid var(--border);
+      padding:16px;
+    }
+    .brand{ display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:12px; background:var(--surface); border:1px solid var(--border); }
+    .logo{ width:28px; height:28px; border-radius:8px; background:var(--accent) }
+    .brand-title{ font-weight:900; letter-spacing:.2px }
+    .brand-badge{ margin-left:auto; font-size:12px; color:var(--muted) }
+
+    .search{
+      margin:12px 0; background:var(--surface); border:1px solid var(--border);
+      border-radius:12px; padding:8px 10px; display:flex; gap:8px; align-items:center;
+    }
+    .search input{ all:unset; width:100%; font-size:14px; color:var(--text) }
+    .nav{ display:grid; gap:6px; margin-top:8px; }
+    .tab{
+      display:flex; align-items:center; gap:10px; padding:10px 12px; border-radius:12px;
+      background:var(--surface); border:1px solid var(--border);
+      cursor:pointer; user-select:none; font-weight:700; color:#222; transition:transform .05s ease;
+    }
+    .tab:hover{ border-color:#d7dbe2; transform:translateY(-1px) }
+    .tab.active{ background:var(--accent-50); color:var(--accent); border-color:var(--accent); }
+    .section-head{ margin:14px 8px 6px; color:var(--muted); font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.06em }
+
+    /* ===== Main content ===== */
+    main{ padding:24px; }
+    .hero{
+      background:var(--surface); border:1px solid var(--border); border-radius:var(--radius-lg);
+      box-shadow:var(--shadow); padding:24px; display:flex; justify-content:space-between; align-items:center; gap:20px; margin-bottom:16px;
+    }
+    .hero h1{ margin:0; font-size:36px; line-height:1.1 }
+    .hero p{ margin:6px 0 0; color:var(--muted) }
+
+    .wrap{ max-width:1200px; margin:0 auto 80px }
+    .grid-two{ display:grid; grid-template-columns:minmax(0,1fr) 320px; gap:18px }
+    @media (max-width:980px){ .grid-two{ grid-template-columns:1fr } }
+
+    .card{ background:#fff; border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow) }
+    .card-h{ padding:12px 16px; border-bottom:1px solid var(--border); font-weight:800 }
+    .card-b{ padding:14px 16px }
+    .stack{ display:grid; gap:12px }
+
+    label{ display:block; margin:10px 0 6px; font-weight:700 }
+    input,select,textarea{ width:100%; padding:10px 12px; border:1px solid var(--border); border-radius:12px; font:inherit; background:#fff; outline:none }
+    input:focus,select:focus,textarea:focus{ border-color:var(--accent) }
+    textarea{ min-height:88px }
+
+    .section{ border:1px solid var(--border); border-radius:14px; background:#fff; margin:12px 0 }
+    .section-h{ display:flex; justify-content:space-between; align-items:center; padding:12px 14px; border-bottom:1px solid var(--border); background:#FAFAFF; border-radius:14px 14px 0 0; cursor:pointer }
+    .section-title{ font-weight:800 }
+    .section-c{ padding:12px; display:block }
+    .section-c.collapsed{ display:none }
+    .badge{ display:inline-block; font-size:12px; padding:2px 8px; border-radius:999px; background:#EEF2FF; border:1px solid #DBE2FF }
+    .crit{ background:#FFECEC; border-color:#FFD9D9; color:#8A1D1D }
+
+    .item{ border:1px solid var(--border); border-radius:12px; background:#fff; padding:12px; margin:10px 0 }
+    .item.error{ border-color:#ffd0d0; background:#fff8f8 }
+    .q{ font-weight:800; margin-bottom:8px; display:flex; gap:8px; flex-wrap:wrap; align-items:center }
+    .meta{ font-size:12px; color:var(--muted); font-weight:600 }
+    .yn{ display:flex; gap:8px; flex-wrap:wrap }
+    .btn{ padding:8px 14px; border-radius:999px; border:1px solid var(--border); background:#fff; cursor:pointer; font-weight:800 }
+    .btn:hover{ border-color:#cbd5e1 }
+    .btn.yes{ background:#e9fbf0; border-color:#b7eac9; color:#126c35 }
+    .btn.no{ background:#fff1f1; border-color:#ffc7c7; color:#9b1c1c }
+    .btn.na{ background:#eef5ff; border-color:#d9e4ff; color:var(--accent-600) }
+    .btn.selected{ color:#fff }
+    .btn.yes.selected{ background:var(--success); border-color:var(--success) }
+    .btn.no.selected{ background:var(--danger); border-color:var(--danger) }
+    .btn.na.selected{ background:var(--accent); border-color:var(--accent) }
+    .cwrap{ margin-top:8px; display:none }
+    .cwrap.show{ display:block }
+    .hint{ font-size:12px; color:var(--muted) }
+    .cerr{ display:none; color:var(--danger); font-size:12px; margin-top:4px }
+    .required + .cerr{ display:block }
+
+    /* Right rail */
+    .rail{ position:sticky; top:24px }
+    .chip{ border:1px solid var(--border); background:#F8FAFC; padding:6px 10px; border-radius:999px; font-size:12px; display:inline-block }
+    .chip.bad{ border-color:#ffd2d2; background:#fff6f6; color:#b42323 }
+    .scorebig{ font-weight:900; font-size:28px }
+    .pf{ font-weight:900; padding:4px 10px; border-radius:999px; color:#fff; display:inline-block }
+    .pf.pass{ background:var(--success) }
+    .pf.fail{ background:var(--danger) }
+    .autofail{ display:none; margin:10px 0; padding:10px; border-radius:12px; background:#fff1f1; border:1px solid #ffd1d1; color:#7f1d1d; font-weight:700; text-align:center }
+
+    .foot{ position:sticky; bottom:0; background:#fff; border-top:1px solid var(--border); padding:10px 16px; display:flex; gap:10px; justify-content:flex-end; border-radius:12px 12px 0 0 }
+    .ghost{ background:#F4F6FA; border:1px solid var(--border); padding:10px 14px; border-radius:12px; font-weight:800; cursor:pointer }
+    .primary{ background:var(--accent); border:1px solid var(--accent); color:#fff; padding:10px 14px; border-radius:12px; font-weight:800; cursor:pointer }
+    .primary:hover{ background:var(--accent-600); border-color:var(--accent-600) }
+
+    /* ===== Charts: make non-interactive layers ignore clicks ===== */
+    .chart-wrap{ position:relative; overflow-x:auto; padding:8px 6px 26px 6px; }
+    .chart{ position:relative; height:280px; min-width:520px; display:flex; align-items:flex-end; gap:12px; padding-left:44px; }
+    .y-axis{
+      position:absolute; left:0; top:0; bottom:26px; width:44px; color:var(--muted); font-size:11px;
+      display:flex; flex-direction:column; justify-content:space-between; align-items:flex-end; padding:4px 4px 20px 0;
+      pointer-events:none;
+    }
+    .chart-grid{
+      position:absolute; left:44px; right:0; top:0; bottom:26px; pointer-events:none;
+      background: linear-gradient(to top, rgba(0,0,0,0.06) 1px, transparent 1px) repeat-y;
+      background-size: 100% 25%;
+    }
+    .chart .bar{ --h:120px; width:38px; min-width:38px; height:var(--h); border-radius:8px 8px 0 0; background:var(--accent); position:relative; transform-origin: bottom; transition: height .35s ease, transform .12s ease; }
+    .chart .bar:hover{ transform: scale(1.03); }
+    .chart .bar .val{ position:absolute; top:-20px; left:0; right:0; text-align:center; font-weight:800; font-size:12px; }
+    .chart .bar .lbl{ position:absolute; bottom:-22px; left:-16px; right:-16px; width:70px; text-align:center; font-size:11px; color:var(--muted); transform: rotate(-35deg); transform-origin: top center; white-space:nowrap; }
+    .legend{ display:flex; gap:10px; align-items:center; font-size:12px; color:var(--muted); margin:6px 0 0; }
+    .legend .key{ width:12px; height:12px; border-radius:3px; background:var(--accent); display:inline-block; margin-right:6px; }
+    .qms-tooltip{ position:fixed; z-index:9999; pointer-events:none; background:#111827; color:#fff; font-size:12px; border-radius:8px; padding:6px 8px; box-shadow:var(--shadow); transform:translate(-50%, -120%); white-space:nowrap; opacity:0; transition:opacity .1s ease; }
+
+    .reports-controls{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-bottom:8px; }
+    .select-mini, .checkbox-mini{ font:inherit; font-size:12px; padding:6px 8px; border-radius:10px; border:1px solid var(--border); background:#fff; }
+    .checkbox-mini{ display:flex; gap:6px; align-items:center; padding:4px 8px; }
+
+    .brandwrap{ display:none }
+
+    /* ===== Modals: clean + safe ===== */
+.backdrop{
+  display:none;
+  position:fixed;
+  inset:0;
+  background:rgba(0,0,0,.45);
+  align-items:center;
+  justify-content:center;
+  z-index:1000;
+}
+
+.backdrop.open{
+  display:flex;
+}
+
+/* =======================
+   DASHBOARD (Summary)
+   ======================= */
+
+#dashboard-tab .dashwrap{ max-width:1200px; margin:0 auto; }
+#dashboard-tab .dashhead{ margin-bottom:12px; }
+
+/* Grid layout */
+#dashboard-tab .widgetgrid{
+  display:grid;
+  grid-template-columns:repeat(12, minmax(0,1fr));
+  gap:12px;
+}
+
+#dashboard-tab .span-3{ grid-column: span 3; }
+#dashboard-tab .span-5{ grid-column: span 5; }
+#dashboard-tab .span-7{ grid-column: span 7; }
+#dashboard-tab .span-12{ grid-column: span 12; }
+
+@media (max-width:1100px){
+  #dashboard-tab .span-3,
+  #dashboard-tab .span-5,
+  #dashboard-tab .span-7{ grid-column: span 12; }
+}
+
+/* Widget cards */
+#dashboard-tab .widget{
+  background:#fff;
+  border:1px solid var(--border);
+  border-radius:var(--radius);
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+
+#dashboard-tab .wh{
+  padding:12px 16px;
+  border-bottom:1px solid var(--border);
+  font-weight:900;
+}
+
+#dashboard-tab .wb{ padding:14px 16px; }
+
+#dashboard-tab .kpi{
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  align-items:flex-start;
+}
+
+#dashboard-tab .big{ font-size:42px; font-weight:900; line-height:1; }
+#dashboard-tab .sub{ color:var(--muted); font-weight:700; }
+#dashboard-tab .smallnote{ color:var(--muted); font-size:12px; font-weight:700; }
+
+/* Donuts */
+#dashboard-tab .donut{
+  --p:0deg;
+  width:120px;
+  height:120px;
+  border-radius:50%;
+  background:conic-gradient(var(--accent) var(--p), #E5E7EB 0);
+  display:grid;
+  place-items:center;
+  margin:10px auto;
+}
+
+#dashboard-tab .donut .hole{
+  width:78px;
+  height:78px;
+  border-radius:50%;
+  background:#fff;
+  display:grid;
+  place-items:center;
+  font-weight:900;
+  border:1px solid var(--border);
+}
+
+/* Table */
+#dashboard-tab .table{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+  font-size:14px;
+}
+
+#dashboard-tab .table thead th{
+  text-align:left;
+  font-size:12px;
+  color:var(--muted);
+  font-weight:900;
+  padding:10px 10px;
+  border-bottom:1px solid var(--border);
+}
+
+#dashboard-tab .table tbody td{
+  padding:10px 10px;
+  border-bottom:1px solid var(--border);
+  vertical-align:top;
+}
+
+#dashboard-tab .table tbody tr:last-child td{ border-bottom:none; }
+
+  </style>
+</head>
+
+<body>
+  <div class="app">
+    <!-- ===== Sidebar ===== -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="logo"></div>
+        <div class="brand-title">bash QMS</div>
+        <span class="brand-badge"></span>
+      </div>
+
+      <div class="search">
+        <svg width="16" height="16" viewBox="0 0 24 24"><path fill="#9CA3AF" d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0016 9.5 6.5 6.5 0 109.5 16a6.471 6.471 0 004.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+        <input placeholder="Search" />
+      </div>
+
+      <div class="section-head">Quality Assurance</div>
+      <nav class="nav">
+        <div class="tab" data-tab="dashboard">Dashboard</div>
+        <div class="tab active" data-tab="form">New Evaluation</div>
+        <div class="tab" data-tab="list">Completed Evaluations</div>
+        <div class="tab" data-tab="agents">Agents</div>
+        <!--
+<div class="tab" data-tab="reports">Reports</div>
+<div class="tab" data-tab="templates">Scorecards</div>
+-->
+<div class="tab" data-tab="disputes">
+  Disputes <span id="dispute-badge" class="badge" style="display:none">0</span>
+</div>
+        <div class="tab" data-tab="settings">Settings</div>
+       
+      </nav>
+
+      <div class="brandwrap"></div>
+    </aside>
+
+    <!-- ===== Main ===== -->
+    <main>
+      <div class="hero">
+        <div>
+          <h1>Hello! 👋 </h1>
+          <p>You're not here by accident. This is your QA workspace — evaluate, track and improve customer support.</p>
+        </div>
+        <div style="opacity:.9">
+          <svg width="140" height="90" viewBox="0 0 140 90" fill="none"><rect x="5" y="20" width="50" height="60" rx="10" fill="#EEF2FF" stroke="#D9E0FF"/><rect x="65" y="10" width="70" height="70" rx="12" fill="#EEF2FF" stroke="#D9E0FF"/></svg>
+        </div>
+      </div>
+
+      <div class="wrap">
+        <!-- ===== FORM TAB ===== -->
+        <div id="form-tab" class="tab-content">
+          <form id="evaluation-form" novalidate>
+            <div class="grid-two">
+              <div>
+                <div class="card">
+                  <div class="card-b">
+                    <label for="agent-select">Agent:</label>
+                    <select id="agent-select" required>
+                      <option value="">Select an Agent</option>
+                    </select>
+
+                    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:8px">
+                      <div style="flex:1 1 240px">
+                        <label for="ticket-number">Ticket number:</label>
+                        <div style="display:flex; gap:8px; align-items:flex-end">
+                          <input type="text" id="ticket-number" required>
+                          <button type="button" class="ghost" id="btn-load-ticket" style="height:48px">Load Ticket</button>
+                        </div>
+                      </div>
+                      <div style="flex:1 1 200px">
+                        <label for="channel">Channel:</label>
+                        <select id="channel" required>
+                          <option value="">Select Type</option>
+                          <option value="call">Calls</option>
+                          <option value="chat">Chat</option>
+                          <option value="email">Email</option>
+                        </select>
+                      </div>
+                      <div style="flex:1 1 200px">
+                        <label for="date">Date of Evaluation:</label>
+                        <input type="date" id="date" required>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div id="ticket-view" class="card" style="margin-top:12px; display:none">
+                  <div class="card-h">Ticket Preview</div>
+                  <div class="card-b" id="ticket-content"><div class="hint">Use "Load Ticket" to preview.</div></div>
+                </div>
+
+                <div id="autofail-message" class="autofail">This evaluation has automatically failed due to a compliance/process failure.</div>
+
+                <!-- === CHECKLIST === -->
+                <div class="card" style="margin-top:12px">
+                  <div class="card-h">Quality Checklist</div>
+                  <div class="card-b">
+                    <!-- Critical -->
+                    <div class="section" data-section="critical">
+                      <div class="section-h"><span class="section-title">Compliance/Process</span><span class="badge crit">Critical</span></div>
+                      <div class="section-c">
+                        <div class="item critical" data-section="critical">
+                          <div class="q">Has the agent verified the customer? <span class="meta">(0 points)</span> <span class="badge crit">Auto-Fail</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="verification" data-weight="0">Yes</button>
+                            <button type="button" class="btn no" data-criterion="verification" data-weight="0">No</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder="Add context or evidence..."></textarea>
+                            <div class="hint">Tip: paste case links or policy refs when relevant.</div>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="item critical" data-section="critical">
+                          <div class="q">Has the agent adhered to the data protection process? <span class="meta">(0 points)</span> <span class="badge crit">Auto-Fail</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="data-protection" data-weight="0">Yes</button>
+                            <button type="button" class="btn no" data-criterion="data-protection" data-weight="0">No</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder="Add context or evidence..."></textarea>
+                            <div class="hint">Tip: specify which step failed and why.</div>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="item critical" data-section="critical">
+                          <div class="q">Has the agent followed the correct process? <span class="meta">(0 points)</span> <span class="badge crit">Auto-Fail</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="process" data-weight="0">Yes</button>
+                            <button type="button" class="btn no" data-criterion="process" data-weight="0">No</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder="Add context or evidence..."></textarea>
+                            <div class="hint">Tip: outline expected vs observed steps.</div>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="section-summary" style="padding:8px 0;color:var(--muted);font-weight:700">
+                          Status: <span class="section-score" data-section="critical">Not Started</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <!-- Investigation -->
+                    <div class="section" data-section="investigation">
+                      <div class="section-h"><span class="section-title">Investigation</span></div>
+                      <div class="section-c">
+                        <div class="item" data-section="investigation">
+                          <div class="q">Has the agent conducted a full investigation? <span class="meta">(7 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="investigation" data-weight="7">Yes</button>
+                            <button type="button" class="btn no" data-criterion="investigation" data-weight="7">No</button>
+                            <button type="button" class="btn na" data-criterion="investigation" data-weight="7">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", explain investigation gaps...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="item" data-section="investigation">
+                          <div class="q">Has the agent shown a strong understanding of the company's policies and procedures? <span class="meta">(6 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="policies" data-weight="6">Yes</button>
+                            <button type="button" class="btn no" data-criterion="policies" data-weight="6">No</button>
+                            <button type="button" class="btn na" data-criterion="policies" data-weight="6">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", note policy misunderstanding...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="item" data-section="investigation">
+                          <div class="q">FCR - Investigation <span class="meta">(7 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="fcr-investigation" data-weight="7">Yes</button>
+                            <button type="button" class="btn no" data-criterion="fcr-investigation" data-weight="7">No</button>
+                            <button type="button" class="btn na" data-criterion="fcr-investigation" data-weight="7">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", why no first contact resolution?'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="section-summary">Section Score: <span class="section-score" data-section="investigation">0/20</span></div>
+                      </div>
+                    </div>
+
+                    <!-- Communication -->
+                    <div class="section" data-section="communication">
+                      <div class="section-h"><span class="section-title">Communication Skills</span></div>
+                      <div class="section-c">
+                        <div class="item" data-section="communication">
+                          <div class="q">Greeting &amp; Sign-off <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="greeting" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="greeting" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="greeting" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", specify what was missing...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="item" data-section="communication">
+                          <div class="q">Positive open <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="positive-open" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="positive-open" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="positive-open" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", why not?'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="item" data-section="communication">
+                          <div class="q">Appropriate closing <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="appropriate-closing" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="appropriate-closing" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="appropriate-closing" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", what should have been used?'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="item" data-section="communication">
+                          <div class="q">Tone of voice <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="tone" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="tone" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="tone" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", specify examples...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="item" data-section="communication">
+                          <div class="q">Use of appropriate emojis <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="emojis" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="emojis" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="emojis" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", give examples or policy...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="item" data-section="communication">
+                          <div class="q">Grammatical / Spelling errors <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="grammar" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="grammar" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="grammar" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", cite examples...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="item" data-section="communication">
+                          <div class="q">Has the agent addressed the issue? <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="issue-addressed" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="issue-addressed" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="issue-addressed" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", detail the gap...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="item" data-section="communication">
+                          <div class="q">Additional relevant information provided <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="additional-info" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="additional-info" data-weight="5">No</button>
+                            <button type="button" class="btn na" data-criterion="additional-info" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", what was missing?'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+
+                        <div class="section-summary">Section Score: <span class="section-score" data-section="communication">0/40</span></div>
+                      </div>
+                    </div>
+
+                    <!-- Company Values -->
+                    <div class="section" data-section="company-values">
+                      <div class="section-h"><span class="section-title">Company Values</span></div>
+                      <div class="section-c">
+                        <div class="item" data-section="company-values">
+                          <div class="q">Was the agent Bold &amp; Accountable? <span class="meta">(10 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="bold-accountable" data-weight="10">Yes</button>
+                            <button type="button" class="btn no" data-criterion="bold-accountable" data-weight="10">No</button>
+                            <button type="button" class="btn na" data-criterion="bold-accountable" data-weight="10">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", give examples...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="item" data-section="company-values">
+                          <div class="q">Was the agent Simple &amp; Human? <span class="meta">(10 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="simple-human" data-weight="10">Yes</button>
+                            <button type="button" class="btn no" data-criterion="simple-human" data-weight="10">No</button>
+                            <button type="button" class="btn na" data-criterion="simple-human" data-weight="10">N/A</button>
+                          </div>
+                          <div class="cwrap">
+                            <textarea class="comments" rows="2" placeholder='If "No", explain...'></textarea>
+                            <div class="cerr">Comment is required when selecting No.</div>
+                          </div>
+                        </div>
+                        <div class="section-summary">Section Score: <span class="section-score" data-section="company-values">0/20</span></div>
+                      </div>
+                    </div>
+
+                    <!-- Wrap-up & Properties -->
+                    <div class="section" data-section="wrap-up-properties">
+                      <div class="section-h"><span class="section-title">Wrap-up &amp; Properties</span></div>
+                      <div class="section-c">
+                        <div class="item" data-section="wrap-up-properties">
+                          <div class="q">Were the contact details correctly updated? <span class="meta">(2 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="custom-1" data-weight="2">Yes</button>
+                            <button type="button" class="btn no" data-criterion="custom-1" data-weight="0">No</button>
+                            <button type="button" class="btn na" data-criterion="custom-1" data-weight="2">N/A</button>
+                          </div>
+                          <div class="cwrap"><textarea class="comments" rows="2" placeholder="Notes..."></textarea><div class="cerr">Comment is required when selecting No.</div></div>
+                        </div>
+                        <div class="item" data-section="wrap-up-properties">
+                          <div class="q">Were the correct properties added? <span class="meta">(8 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="custom-2" data-weight="8">Yes</button>
+                            <button type="button" class="btn no" data-criterion="custom-2" data-weight="0">No</button>
+                            <button type="button" class="btn na" data-criterion="custom-2" data-weight="8">N/A</button>
+                          </div>
+                          <div class="cwrap"><textarea class="comments" rows="2" placeholder="Notes..."></textarea><div class="cerr">Comment is required when selecting No.</div></div>
+                        </div>
+                        <div class="item" data-section="wrap-up-properties">
+                          <div class="q">Was the correct status set? <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="custom-3" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="custom-3" data-weight="0">No</button>
+                            <button type="button" class="btn na" data-criterion="custom-3" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap"><textarea class="comments" rows="2" placeholder="Notes..."></textarea><div class="cerr">Comment is required when selecting No.</div></div>
+                        </div>
+                        <div class="item" data-section="wrap-up-properties">
+                          <div class="q">Were the correct notes added?  <span class="meta">(5 points)</span></div>
+                          <div class="yn">
+                            <button type="button" class="btn yes" data-criterion="custom-4" data-weight="5">Yes</button>
+                            <button type="button" class="btn no" data-criterion="custom-4" data-weight="0">No</button>
+                            <button type="button" class="btn na" data-criterion="custom-4" data-weight="5">N/A</button>
+                          </div>
+                          <div class="cwrap"><textarea class="comments" rows="2" placeholder="Notes..."></textarea><div class="cerr">Comment is required when selecting No.</div></div>
+                        </div>
+                        <div class="section-summary">Section Score: <span class="section-score" data-section="wrap-up-properties">0/0</span></div>
+                      </div>
+                    </div>
+
+                    <label for="overall-comments" style="margin-top:14px">Overall Comments:</label>
+                    <textarea id="overall-comments" rows="3" placeholder="Summary, coaching, and action items..."></textarea>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right Rail -->
+              <div class="rail">
+                <div class="card">
+                  <div class="card-h">Status</div>
+                  <div class="card-b">
+                    <div class="scorebig"><span id="current-score">0</span>/<span id="max-score">100</span></div>
+                    <div style="margin-top:6px"><span id="pass-fail-indicator" class="pf fail">FAIL</span></div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px">
+                      <span class="chip" id="chip-unanswered">Unanswered: 0</span>
+                      <span class="chip bad" id="chip-missing-comments">"No" w/o comment: 0</span>
+                      <span class="chip" id="chip-no-count">Total "No": 0</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="card" style="margin-top:12px">
+                  <div class="card-h">Actions</div>
+                  <div class="card-b" style="display:flex;gap:8px;flex-wrap:wrap">
+                    <button type="button" class="ghost" id="btn-mark-calibration">Mark for calibration</button>
+                   </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Sticky footer -->
+            <div class="foot">
+              <button type="button" class="ghost" id="btn-next">Next incomplete →</button>
+              <button type="submit" class="primary" id="submit-evaluation" disabled>Submit</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- LIST TAB -->
+        <div id="list-tab" class="tab-content" style="display:none">
+          <div class="card">
+            <div class="card-h">Completed Evaluations <button id="export-csv" class="ghost" style="float:right">Export CSV</button></div>
+            <div class="card-b">
+              <div id="evaluations-list" class="stack"></div>
+              <p id="no-evaluations" class="hint">No evaluations yet.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- DISPUTES TAB -->
+<div id="disputes-tab" class="tab-content" style="display:none">
+  <div class="card">
+    <div class="card-h">Disputes Queue</div>
+    <div class="card-b">
+      <div id="disputes-list" class="stack"></div>
+      <p id="no-disputes" class="hint">No open disputes 🎉</p>
+    </div>
+  </div>
+</div>
+
+        <!-- DASHBOARD TAB -->
+        <!-- DASHBOARD TAB -->
+<div id="dashboard-tab" class="tab-content" style="display:none">
+  <div class="dashwrap">
+    <div class="dashhead">
+      <h2 style="margin:0 0 12px 0; font-size:28px; font-weight:900;">My Summary Dashboard</h2>
+    </div>
+
+    <div class="widgetgrid">
+      <!-- KPI: Evaluations -->
+      <div class="widget span-3">
+        <div class="wh">Evaluations</div>
+        <div class="wb kpi">
+          <div class="big" id="kpi-evals">0</div>
+          <div class="sub">Total evaluations</div>
+        </div>
+      </div>
+
+      <!-- Donut: Pass Rate -->
+      <div class="widget span-3">
+        <div class="wh">Pass Rate</div>
+        <div class="wb">
+          <div class="donut" id="donut-pass">
+            <div class="hole"><span id="pass-rate">0%</span></div>
+          </div>
+          <div class="smallnote" style="text-align:center"><span id="pass-count">0</span> passed</div>
+        </div>
+      </div>
+
+      <!-- Donut: Avg Quality -->
+      <div class="widget span-3">
+        <div class="wh">Quality Score</div>
+        <div class="wb">
+          <div class="donut" id="donut-avg">
+            <div class="hole"><span id="avg-score">0%</span></div>
+          </div>
+          <div class="smallnote" style="text-align:center">Avg score</div>
+        </div>
+      </div>
+
+      <!-- Donut: Auto-fails -->
+      <div class="widget span-3">
+        <div class="wh">Auto-Fails</div>
+        <div class="wb">
+          <div class="donut" id="donut-auto">
+            <div class="hole"><span id="auto-rate">0%</span></div>
+          </div>
+          <div class="smallnote" style="text-align:center"><span id="auto-count">0</span> auto-failed</div>
+        </div>
+      </div>
+
+      <!-- Table: Questions -->
+      <div class="widget span-7">
+        <div class="wh">Questions</div>
+        <div class="wb">
+          <table class="table">
+            <thead>
+              <tr><th>Questions</th><th>Count</th><th>% Pass</th></tr>
+            </thead>
+            <tbody id="line-items">
+              <tr><td colspan="3" class="smallnote">No data yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Recent Evaluations -->
+      <div class="widget span-5">
+        <div class="wh">Recent Evaluations</div>
+        <div class="wb" id="recent-evaluations">
+          <p class="smallnote">No evaluations yet.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+        <!-- AGENTS TAB -->
+        <div id="agents-tab" class="tab-content" style="display:none">
+          <div class="card">
+            <div class="card-h">Agent Management</div>
+            <div class="card-b">
+              <form id="agent-form" style="display:grid;gap:8px;max-width:520px">
+                <div><label for="new-agent-name">Agent Name</label><input type="text" id="new-agent-name" required></div>
+                <div><label for="new-agent-email">Email</label><input type="email" id="new-agent-email" required></div>
+                <div><label for="new-agent-team">Team</label><input type="text" id="new-agent-team" required></div>
+                <div><label for="new-agent-position">Position</label><input type="text" id="new-agent-position" required></div>
+                <button type="submit" class="primary" style="width:max-content">Add Agent</button>
+              </form>
+              <div style="height:12px"></div>
+              <div id="agents-list" class="stack"></div>
+              <p id="no-agents" class="hint">No agents added yet.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- REPORTS TAB -->
+        <div id="reports-tab" class="tab-content" style="display:none">
+          <div class="card">
+            <div class="card-h">Quality Reports</div>
+            <div class="card-b">
+              <div class="card" style="box-shadow:none">
+                <div class="card-b" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end">
+                  <div>
+                    <label for="date-range">Date Range</label>
+                    <select id="date-range">
+                      <option value="all">All Time</option>
+                      <option value="month">This Month</option>
+                      <option value="week">This Week</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="agent-filter">Agent</label>
+                    <select id="agent-filter">
+                      <option value="all">All Agents</option>
+                    </select>
+                  </div>
+                  <button id="apply-filters" class="ghost">Apply Filters</button>
+                </div>
+              </div>
+
+              <div class="reports-controls">
+                <label class="checkbox-mini"><input type="checkbox" id="toggle-values" checked> Show values</label>
+                <label class="checkbox-mini"><input type="checkbox" id="toggle-animate" checked> Animate</label>
+                <div style="margin-left:auto"></div>
+                <label>Criteria sort</label>
+                <select id="criteria-sort" class="select-mini">
+                  <option value="desc">Pass rate ↓</option>
+                  <option value="asc">Pass rate ↑</option>
+                  <option value="alpha">A → Z</option>
+                  <option value="none">Original</option>
+                </select>
+                <label>Agents sort</label>
+                <select id="agent-sort" class="select-mini">
+                  <option value="desc">Avg score ↓</option>
+                  <option value="asc">Avg score ↑</option>
+                  <option value="alpha">A → Z</option>
+                  <option value="none">Original</option>
+                </select>
+              </div>
+
+              <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(350px,1fr));gap:12px">
+                <div class="card" style="box-shadow:none">
+                  <div class="card-b">
+                    <h4 style="margin:0">Score by Criterion</h4>
+                    <div class="chart-wrap"><div class="chart" id="criteria-chart"></div></div>
+                    <div class="legend"><span class="key"></span>Pass rate (%)</div>
+                  </div>
+                </div>
+                <div class="card" style="box-shadow:none">
+                  <div class="card-b">
+                    <h4 style="margin:0">Agent Performance</h4>
+                    <div class="chart-wrap"><div class="chart" id="agent-chart"></div></div>
+                    <div class="legend"><span class="key"></span>Average score (0–100)</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="card" style="box-shadow:none;margin-top:12px">
+                <div class="card-b">
+                  <h4 style="margin:0">Monthly Trend</h4>
+                  <div class="chart-wrap"><div class="chart" id="trend-chart"></div></div>
+                  <div class="legend"><span class="key"></span>Average score by month</div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TEMPLATES TAB -->
+        <div id="templates-tab" class="tab-content" style="display:none">
+          <div class="card">
+            <div class="card-h">Evaluation Templates</div>
+            <div class="card-b">
+              <form id="template-form">
+                <div style="display:grid;gap:12px;max-width:700px">
+                  <div><label for="template-name">Template Name</label><input type="text" id="template-name" required></div>
+                  <div><label for="template-description">Description</label><textarea id="template-description" rows="2"></textarea></div>
+                  <h4>Criteria (Total: 100 points)</h4>
+                  <div id="template-criteria" class="stack">
+                    <div class="template-criterion" style="display:flex;gap:8px;align-items:center">
+                      <input type="text" class="criterion-name" placeholder="Criterion Name" required>
+                      <input type="number" class="criterion-weight" placeholder="Weight" min="1" max="100" value="20" required style="width:120px">
+                      <button type="button" class="ghost remove-criterion">Remove</button>
+                    </div>
+                  </div>
+                  <p id="weight-total" style="font-weight:800">Total Weight: 20/100</p>
+                  <div style="display:flex;gap:8px">
+                    <button type="button" id="add-criterion" class="ghost">+ Add Criterion</button>
+                    <button type="submit" class="primary">Save Template</button>
+                  </div>
+                </div>
+              </form>
+
+              <h4 style="margin-top:24px">Saved Templates</h4>
+              <div id="templates-list" class="stack"></div>
+              <p id="no-templates" class="hint">No templates added yet.</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- SETTINGS TAB -->
+        <div id="settings-tab" class="tab-content" style="display:none">
+          <div class="card">
+            <div class="card-h">System Settings</div>
+            <div class="card-b">
+              <div class="card" style="box-shadow:none;margin-bottom:12px">
+                <div class="card-b">
+                  <h4 style="margin:0 0 8px 0">Notification Settings</h4>
+                  <p>Configure email notifications for new evaluations.</p>
+                  <label for="team-lead-email">Team Lead Email</label>
+                  <input type="email" id="team-lead-email" placeholder="manager@bash.com">
+                  <div style="margin-top:10px">
+                    <label style="display:flex;gap:8px;align-items:center">
+                      <span>Also notify agents when they're evaluated</span>
+                      <input type="checkbox" id="notify-agents"> 
+                    </label>
+                  </div>
+                  <button id="save-notification-settings" class="primary" style="margin-top:10px">Save Notification Settings</button>
+                </div>
+              </div>
+
+              <div class="card" style="box-shadow:none;margin-bottom:12px">
+                <div class="card-b">
+                  <h4 style="margin:0 0 8px 0">Data Backup</h4>
+                  <p>Export all your QMS data to a file for safekeeping.</p>
+                  <button id="backup-data" class="ghost">Backup All Data</button>
+                </div>
+              </div>
+
+              <div class="card" style="box-shadow:none;margin-bottom:12px">
+                <div class="card-b">
+                  <h4 style="margin:0 0 8px 0">Restore Data</h4>
+                  <p>Restore your QMS data from a backup file.</p>
+                  <input type="file" id="restore-file" accept=".json">
+                  <button id="restore-data" class="ghost">Restore Data</button>
+                </div>
+              </div>
+
+              <div class="card" style="box-shadow:none">
+                <div class="card-b">
+                  <h4 style="margin:0 0 8px 0">Reset System</h4>
+                  <p>Warning: This will delete all evaluations and agents.</p>
+                  <button id="reset-system" class="ghost" style="background:#fff1f1;border-color:#ffd1d1">Reset System</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /wrap -->
+    </main>
+  </div><!-- /app -->
+
+  <!-- Simple Modals -->
+<div class="backdrop" id="dispute-backdrop">
+    <div class="card" style="max-width:620px;width:95%">
+      <div class="card-h">Open Dispute</div>
+      <div class="card-b">Agents can submit a dispute after an evaluation is saved. Open "Completed Evaluations" and click "Dispute" on the card.</div>
+      <div class="card-b" style="display:flex;justify-content:flex-end"><button class="ghost" id="close-dispute">Close</button></div>
+    </div>
+  </div>
+
+<div class="backdrop" id="eval-dispute-backdrop">
+    <div class="card" style="max-width:620px;width:95%">
+      <div class="card-h">Dispute Evaluation</div>
+      <div class="card-b"><label for="dispute-reason">Reason</label><textarea id="dispute-reason" placeholder="Provide the context and what you want reviewed."></textarea></div>
+      <div class="card-b" style="display:flex;gap:8px;justify-content:flex-end"><button class="ghost" id="cancel-eval-dispute">Cancel</button><button class="primary" id="save-eval-dispute">Submit Dispute</button></div>
+    </div>
+  </div>
+
+<div class="backdrop" id="cal-backdrop">
+    <div class="card" style="max-width:620px;width:95%">
+      <div class="card-h">Mark for Calibration</div>
+      <div class="card-b"><label for="cal-reviewers">Add reviewers (comma separated)</label><input type="text" id="cal-reviewers" placeholder="alex@bash.com, sam@bash.com"></div>
+      <div class="card-b" style="display:flex;gap:8px;justify-content:flex-end"><button class="ghost" id="cal-cancel">Cancel</button><button class="primary" id="cal-save">Save</button></div>
+    </div>
+  </div>
+
+  <!-- Supabase -->
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+  <script>
+  // Debug guard
+  window.addEventListener('error', (e) => {
+    console.error('[GLOBAL ERROR]', e?.error || e?.message || e);
+    alert('JS error: ' + (e?.error?.message || e?.message || 'check console'));
   });
 
-  return max;
-}
+  // Supabase creds (replace with yours)
+  const SUPABASE_URL = "https://ceebnevkectnlvjapidg.supabase.co";
+  const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNlZWJuZXZrZWN0bmx2amFwaWRnIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjUzNDk4NTcsImV4cCI6MjA4MDkyNTg1N30.8Z-12vrB3J_Rc3Jht-YeaG2NFTiFHBisqH3Yll-_cts";
 
-function unansweredCount() {
-  const total = document.querySelectorAll(".item").length;
-  let count = 0;
+  const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
-  document.querySelectorAll(".item").forEach((i) => {
-    if (i.querySelector(".btn.selected")) count++;
-  });
-
-  return total - count;
-}
-
-function totalNoCount() {
-  return document.querySelectorAll(".btn.no.selected").length;
-}
-
-function validateNoComments() {
-  let missing = 0;
-
-  document.querySelectorAll(".item").forEach((item) => {
-    const isNo = !!item.querySelector(".btn.no.selected");
-    const ta = item.querySelector(".comments");
-    const cwrap = item.querySelector(".cwrap");
-
-    if (isNo) {
-      if (cwrap) cwrap.classList.add("show");
-
-      if (ta) {
-        if (!ta.value.trim()) {
-          missing++;
-          ta.classList.add("required");
-          item.classList.add("error");
-        } else {
-          ta.classList.remove("required");
-          item.classList.remove("error");
-        }
+  async function supabaseSmokeTest() {
+    try {
+      const { data, error } = await sb.from('agents').select('*').limit(1);
+      if (error) throw error;
+      const brand = document.querySelector('.brandwrap');
+      if (brand) {
+        const connected = document.createElement('span');
+        connected.className = 'badge';
+        connected.textContent = 'Supabase: Connected';
+        brand.appendChild(connected);
       }
-    } else {
-      if (ta) ta.classList.remove("required");
-      item.classList.remove("error");
+      console.log('Supabase OK. Sample agents:', data);
+    } catch (err) {
+      console.error('Supabase connection failed:', err);
+      const brand = document.querySelector('.brandwrap');
+      if (brand) {
+        const badge = document.createElement('span');
+        badge.className = 'badge crit';
+        badge.textContent = 'Supabase: Error';
+        brand.appendChild(badge);
+      }
+      alert('Supabase error: ' + (err?.message || err));
+    }
+  }
+  document.addEventListener('DOMContentLoaded', supabaseSmokeTest);
+
+  /* ========= DATA STORES ========= */
+  let evaluations = [];
+  let templates = JSON.parse(localStorage.getItem('qms_templates')) || [];
+  let notificationSettings = JSON.parse(localStorage.getItem('qms_notification_settings')) || { teamLeadEmail:'', notifyAgents:false };
+  let autoFailed = false;
+  let pendingCalibration = [];
+  let disputeEvalId = null;
+  let agents = [];
+
+  /* ========= Helpers ========= */
+  function escapeHtml(s) {
+    if (s == null) return '';
+    return String(s)
+      .replaceAll('&', '&amp;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;')
+      .replaceAll('"', '&quot;')
+      .replaceAll("'", '&#039;');
+  }
+
+  // Default date = today
+  document.addEventListener('DOMContentLoaded', () => {
+    const d = document.getElementById('date');
+    if (d && !d.value) {
+      const today = new Date();
+      d.value = today.toISOString().slice(0,10);
     }
   });
 
-  return missing;
-}
-
-function updateSubmitState() {
-  const missing = validateNoComments();
-  const unanswered = unansweredCount();
-  const noCount = totalNoCount();
-
-  const chip1 = document.getElementById("chip-unanswered");
-  const chip2 = document.getElementById("chip-missing-comments");
-  const chip3 = document.getElementById("chip-no-count");
-  const submitBtn = document.getElementById("submit-evaluation");
-
-  if (chip1) chip1.textContent = "Unanswered: " + unanswered;
-  if (chip2) chip2.textContent = '"No" w/o comment: ' + missing;
-  if (chip3) chip3.textContent = 'Total "No": ' + noCount;
-
-  if (submitBtn) submitBtn.disabled = unanswered > 0 || missing > 0;
-}
-
-function updateCurrentScore() {
-  const maxTotal = computeMaxTotal();
-  const maxEl = document.getElementById("max-score");
-  if (maxEl) maxEl.textContent = String(maxTotal || 100);
-
-  if (state.autoFailed) {
-    const current = document.getElementById("current-score");
-    const pf = document.getElementById("pass-fail-indicator");
-
-    if (current) current.textContent = "0";
-
-    if (pf) {
-      pf.textContent = "FAIL";
-      pf.className = "pf fail";
-    }
-
-    updateSubmitState();
-    return;
-  }
-
-  let totalScore = 0;
-
-  document.querySelectorAll(".item").forEach((item) => {
-    const yesBtn = item.querySelector(".btn.yes");
-    const w = parseInt(yesBtn?.getAttribute("data-weight")) || 0;
-
-    const isNA = !!item.querySelector(".btn.na.selected");
-    const isYes = !!item.querySelector(".btn.yes.selected");
-
-    if (!isNA && isYes) {
-      totalScore += w;
-    }
+  /* ========= Freshdesk preview hook ========= */
+  document.getElementById('btn-load-ticket')?.addEventListener('click', () => {
+    const id = document.getElementById('ticket-number').value.trim();
+    const pane = document.getElementById('ticket-view');
+    const body = document.getElementById('ticket-content');
+    if (!id){ alert('Enter ticket number'); return; }
+    pane.style.display='block';
+    body.innerHTML = `<div class="hint">Preview for ticket <strong>${escapeHtml(id)}</strong> (connect your Freshdesk proxy to load real data).</div>`;
   });
 
-  const current = document.getElementById("current-score");
-  if (current) current.textContent = totalScore;
-
-  const pf = document.getElementById("pass-fail-indicator");
-  if (pf) {
-    if (totalScore >= 80) {
-      pf.textContent = "PASS";
-      pf.className = "pf pass";
-    } else {
-      pf.textContent = "FAIL";
-      pf.className = "pf fail";
-    }
-  }
-
-  updateSubmitState();
-}
-
-function onChoice(btn) {
-  const item = btn.closest(".item");
-
-  item
-    .querySelectorAll(".btn.yes,.btn.no,.btn.na")
-    .forEach((b) => b.classList.remove("selected"));
-
-  btn.classList.add("selected");
-
-  const cwrap = item.querySelector(".cwrap");
-  if (cwrap) cwrap.classList.add("show");
-
-  if (!btn.classList.contains("no")) {
-    const ta = item.querySelector(".comments");
-    if (ta) ta.classList.remove("required");
-    item.classList.remove("error");
-  }
-
-  recomputeAutoFail();
-  updateCurrentScore();
-}
-
-/* =========================================================
-   EVENT DELEGATION
-   ========================================================= */
-
-document.addEventListener("click", (e) => {
-  const t = e.target;
-
-  if (t.matches(".btn.yes, .btn.no, .btn.na")) {
-    onChoice(t);
-    return;
-  }
-
-  if (t.matches(".tab")) {
-    document.querySelectorAll(".tab").forEach((x) =>
-      x.classList.remove("active")
-    );
-
-    t.classList.add("active");
-
-    const tn = t.getAttribute("data-tab");
-
-    document
-      .querySelectorAll(".tab-content")
-      .forEach((c) => (c.style.display = "none"));
-
-    const tabEl = document.getElementById(tn + "-tab");
-    if (tabEl) tabEl.style.display = "block";
-
-    return;
-  }
-});
-      /* =========================================================
-   EVALUATION SUBMISSION
-   ========================================================= */
-
-async function createEvaluation(evaluationUi) {
-  try {
-    const { data, error } = await sb
-      .from("evaluations")
-      .insert([evaluationUi])
-      .select()
-      .single();
-
-    if (error) throw error;
-
-    state.evaluations.unshift(data);
-    displayEvaluations();
-    updateDashboard();
-  } catch (err) {
-    console.error("[evaluations] create error (local fallback):", err);
-
-    // fallback to local only
-    state.evaluations.unshift({
-      ...evaluationUi,
-      created_at: new Date().toISOString(),
+  /* ========= Y/N/NA & SCORING ========= */
+  function recomputeAutoFail(){
+    let failing=false;
+    document.querySelectorAll('.item.critical').forEach(item=>{
+      const yesSel = !!item.querySelector('.btn.yes.selected');
+      const noSel  = !!item.querySelector('.btn.no.selected');
+      if(noSel || (!yesSel && !noSel)) failing=true;
     });
-
-    displayEvaluations();
-    updateDashboard();
-    alert("Server save failed; saved locally for now.");
+    autoFailed=failing;
+    document.getElementById('autofail-message').style.display = autoFailed ? 'block' : 'none';
   }
-}
 
-document
-  .getElementById("evaluation-form")
-  ?.addEventListener("submit", async function (e) {
-    e.preventDefault();
+  function updateSectionScore(sectionName){
+    let sectionTotal=0, sectionMaximum=0;
+    document.querySelectorAll('.item[data-section="'+sectionName+'"]').forEach(item=>{
+      const yesBtn=item.querySelector('.btn.yes');
+      const w=parseInt(yesBtn?.getAttribute('data-weight'))||0;
+      const isNA = !!item.querySelector('.btn.na.selected');
+      const isYes= !!item.querySelector('.btn.yes.selected');
+      if(!isNA){ sectionMaximum+=w; if(isYes) sectionTotal+=w; }
+    });
+    const el=document.querySelector('.section-score[data-section="'+sectionName+'"]');
+    if(!el) return;
+    if(sectionName==='critical'){
+      const allAnswered = document.querySelectorAll('.item[data-section="critical"] .btn.yes.selected, .item[data-section="critical"] .btn.no.selected').length ===
+                          document.querySelectorAll('.item[data-section="critical"]').length;
+      if(!allAnswered){ el.textContent='Not Started'; el.style.color=''; }
+      else if(autoFailed){ el.textContent='FAILED'; el.style.color='#ef4444'; }
+      else { el.textContent='PASSED'; el.style.color='#22c55e'; }
+    }else{
+      el.textContent=sectionTotal+'/'+sectionMaximum;
+      el.style.color='';
+    }
+  }
+  function updateAllSectionScores(){
+    document.querySelectorAll('.section').forEach(sec=>{
+      const name=sec.getAttribute('data-section');
+      updateSectionScore(name);
+    });
+  }
 
-    const unanswered = unansweredCount();
-    const missing = validateNoComments();
+  function validateNoComments(){
+    let missing=0;
+    document.querySelectorAll('.item').forEach(item=>{
+      const isNo = !!item.querySelector('.btn.no.selected');
+      const ta = item.querySelector('.comments');
+      const cwrap = item.querySelector('.cwrap');
+      if (isNo) {
+        if (cwrap) cwrap.classList.add('show');
+        if (ta) {
+          if (!ta.value.trim()) { missing++; ta.classList.add('required'); item.classList.add('error'); }
+          else { ta.classList.remove('required'); item.classList.remove('error'); }
+        }
+      } else {
+        if (ta) ta.classList.remove('required');
+        item.classList.remove('error');
+      }
+    });
+    return missing;
+  }
+  function unansweredCount(){
+    const total = document.querySelectorAll('.item').length;
+    let count=0;
+    document.querySelectorAll('.item').forEach(i=>{
+      if(i.querySelector('.btn.selected')) count++;
+    });
+    return total - count;
+  }
+  function totalNoCount(){ return document.querySelectorAll('.btn.no.selected').length; }
 
-    if (unanswered > 0 || missing > 0) {
-      alert("Please resolve all unanswered items and required comments.");
+  function computeMaxTotal(){
+    let max=0;
+    document.querySelectorAll('.item').forEach(item=>{
+      const w=parseInt(item.querySelector('.btn.yes')?.getAttribute('data-weight'))||0;
+      const isNASelected = !!item.querySelector('.btn.na.selected');
+      if(!isNASelected){ max += w; }
+    });
+    return max;
+  }
+
+  function updateSubmitState(){
+    const missing=validateNoComments();
+    const unanswered=unansweredCount();
+    const noCount=totalNoCount();
+    document.getElementById('chip-unanswered').textContent='Unanswered: '+unanswered;
+    document.getElementById('chip-missing-comments').textContent='"No" w/o comment: '+missing;
+    document.getElementById('chip-no-count').textContent='Total "No": '+noCount;
+    document.getElementById('submit-evaluation').disabled = (unanswered>0) || (missing>0);
+  }
+
+  function updateCurrentScore(){
+    const maxTotal = computeMaxTotal();
+    document.getElementById('max-score').textContent = String(maxTotal || 100);
+
+    if(autoFailed){
+      document.getElementById('current-score').textContent='0';
+      const pf=document.getElementById('pass-fail-indicator'); pf.textContent='FAIL'; pf.className='pf fail';
+      updateAllSectionScores(); updateSubmitState(); return;
+    }
+    let totalScore=0;
+    document.querySelectorAll('.item').forEach(item=>{
+      const yesBtn=item.querySelector('.btn.yes');
+      const w=parseInt(yesBtn?.getAttribute('data-weight'))||0;
+      const isNA=!!item.querySelector('.btn.na.selected');
+      const isYes=!!item.querySelector('.btn.yes.selected');
+      if(!isNA && isYes){ totalScore+=w; }
+    });
+    document.getElementById('current-score').textContent=totalScore;
+    const pf=document.getElementById('pass-fail-indicator');
+    if(totalScore>=80){ pf.textContent='PASS'; pf.className='pf pass'; } else { pf.textContent='FAIL'; pf.className='pf fail'; }
+    updateAllSectionScores(); updateSubmitState();
+  }
+
+  function onChoice(btn){
+    const item=btn.closest('.item');
+    item.querySelectorAll('.btn.yes,.btn.no,.btn.na').forEach(b=>b.classList.remove('selected'));
+    btn.classList.add('selected');
+    const cwrap=item.querySelector('.cwrap');
+    if (cwrap) cwrap.classList.add('show');
+    if(!btn.classList.contains('no')){
+      const ta=item.querySelector('.comments');
+      if (ta) ta.classList.remove('required');
+      item.classList.remove('error');
+    }
+    recomputeAutoFail();
+    updateCurrentScore();
+  }
+
+  // Tabs + actions (delegation)
+  document.addEventListener('click', (e) => {
+    const t = e.target;
+
+    if (t.matches('.btn.yes, .btn.no, .btn.na')) { onChoice(t); return; }
+
+    if (t.matches('.tab')) {
+      document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
+      t.classList.add('active');
+      const tn = t.getAttribute('data-tab');
+      document.querySelectorAll('.tab-content').forEach(c=>c.style.display='none');
+      document.getElementById(tn+'-tab').style.display='block';
+      if(tn==='list'){ displayEvaluations(); }
+      if(tn==='dashboard'){ updateDashboard(); }
+      if(tn==='agents'){ displayAgents(); }
+      if(tn==='reports'){ updateAgentFilter(); generateReports(); }
+      if(tn==='templates'){ displayTemplates(); updateTotalWeight(); }
+      if(tn==='disputes'){ displayDisputes(); }
+      if(tn==='settings'){ loadNotificationSettings(); }
       return;
     }
 
-    const selectedAgentId =
-      document.getElementById("agent-select")?.value || "";
+    const sh = t.closest('.section-h');
+    if (sh) { sh.parentElement.querySelector('.section-c')?.classList.toggle('collapsed'); return; }
 
-    const agent = state.agents.find(
-      (a) => String(a.id) === String(selectedAgentId)
-    );
-
-    const agentName = agent ? agent.name : "";
-
-    const ticketNumber =
-      document.getElementById("ticket-number")?.value.trim() || "";
-
-    const channel =
-      document.getElementById("channel")?.value || "";
-
-    const date =
-      document.getElementById("date")?.value || "";
-
-    const overallComments =
-      document.getElementById("overall-comments")?.value || "";
-
-    const criteriaScores = [];
-
-    document.querySelectorAll(".item").forEach((item) => {
-      const qText =
-        item.querySelector(".q")?.childNodes[0]?.textContent?.trim() || "";
-
-      const yes = !!item.querySelector(".btn.yes.selected");
-      const na = !!item.querySelector(".btn.na.selected");
-
-      const yesBtn = item.querySelector(".btn.yes");
-      const w = parseInt(yesBtn?.getAttribute("data-weight")) || 0;
-
-      const comments = item.querySelector(".comments")?.value || "";
-      const isCritical = item.classList.contains("critical");
-      const sectionName = item.getAttribute("data-section");
-
-      criteriaScores.push({
-        name: qText,
-        weight: w,
-        passed: yes,
-        isNA: na,
-        isCritical,
-        comments,
-        section: sectionName,
-      });
-    });
-
-    let total = 0;
-
-    if (!state.autoFailed) {
-      criteriaScores.forEach((c) => {
-        if (!c.isNA && c.passed) total += c.weight;
-      });
+    if (t.matches('.view-details')) {
+      const id=t.getAttribute('data-id');
+      const ev=evaluations.find(e=>e.id===id);
+      if (!ev) return;
+      let msg='Agent: '+ev.agentName+'\n';
+      msg+='Date: '+new Date(ev.date).toLocaleDateString()+'\n';
+      msg+='Overall Score: '+(ev.autoFailed? '0/100 (AUTO-FAIL)' : (ev.overallScore+'/100 '+(ev.passed?'(PASS)':'(FAIL)')))+'\n\n';
+      msg+='Results by Section:\n';
+      for(const key in ev.sections){
+        const s=ev.sections[key];
+        if(key==='critical'){ msg+='\n'+s.name+': '+(ev.autoFailed?'FAILED':'PASSED')+'\n'; }
+        else{ msg+='\n'+s.name+': '+s.score+'/'+s.maximum+' ('+s.percentage.toFixed(1)+'%)\n'; }
+        (s.criteria||[]).forEach(c=>{
+          const r=c.isNA? 'N/A' : (c.passed?'PASS':'FAIL');
+          const critical=c.isCritical?' [CRITICAL]':'';
+          msg+='- '+c.name+' ('+c.weight+' points): '+r+critical+'\n';
+          if(c.comments){ msg+='  Comments: '+c.comments+'\n'; }
+        });
+      }
+      alert(msg);
+      return;
     }
 
-    const evaluation = {
-      id: uuid(),
-      agent_id: selectedAgentId,
-      agent_name: agentName,
-      ticket_number: ticketNumber,
-      channel,
-      date,
-      criteria_scores: criteriaScores,
-      overall_score: state.autoFailed ? 0 : total,
-      auto_failed: state.autoFailed,
-      passed: !state.autoFailed && total >= 80,
-      overall_comments: overallComments,
-      created_at: new Date().toISOString(),
-      dispute: null,
-      calibration: null,
+    if (t.matches('.notify-about-evaluation')) {
+      const id=t.getAttribute('data-id');
+      const ev=evaluations.find(e=>e.id===id);
+      if (ev) sendNotificationEmail(ev);
+      return;
+    }
+
+    if (t.matches('.dispute-eval')) {
+      disputeEvalId=t.getAttribute('data-id');
+      document.getElementById('dispute-reason').value='';
+      document.getElementById('eval-dispute-backdrop').classList.add('open');
+      return;
+    }
+
+    if (t.matches('.delete-evaluation')) {
+      const id=t.getAttribute('data-id');
+      if (!confirm('Delete this evaluation?')) return;
+      removeEvaluation(id);
+      return;
+    }
+
+    if (t.matches('#btn-open-dispute')) {
+      document.getElementById('dispute-backdrop').classList.add('open'); return;
+    }
+    if (t.matches('#close-dispute')) {
+      document.getElementById('dispute-backdrop').classList.remove('open'); return;
+    }
+    if (t.matches('#btn-mark-calibration')) {
+      document.getElementById('cal-backdrop').classList.add('open');
+      document.getElementById('cal-reviewers').value=pendingCalibration.join(', ');
+      return;
+    }
+    if (t.matches('#cal-cancel')) {
+      document.getElementById('cal-backdrop').classList.remove('open'); return;
+    }
+    if (t.matches('#cal-save')) {
+      const v=document.getElementById('cal-reviewers').value.trim();
+      pendingCalibration=v? v.split(',').map(s=>s.trim()).filter(Boolean) : [];
+      document.getElementById('cal-backdrop').classList.remove('open');
+      alert('This evaluation will be flagged for calibration when you submit.');
+      return;
+    }
+    if (t.matches('.resolve-dispute')) {
+  const id = t.getAttribute('data-id');
+  const outcome = t.getAttribute('data-outcome'); // "accepted" or "rejected"
+  const note = prompt(`Add a note (${outcome})`);
+  if (!note) return;
+
+  resolveDispute(id, outcome, note);
+  return;
+}
+
+  });
+
+  document.querySelectorAll('.comments').forEach(t=>t.addEventListener('input',updateSubmitState));
+
+  document.getElementById('btn-next').addEventListener('click',function(){
+    const items=[...document.querySelectorAll('.item')];
+    const target=items.find(i=>!i.querySelector('.btn.selected'));
+    if(target){ target.scrollIntoView({behavior:'smooth',block:'center'}); }
+  });
+
+  // ===== FORM SUBMIT =====
+  document.getElementById('evaluation-form').addEventListener('submit', async function(e){
+    e.preventDefault();
+    const unanswered=unansweredCount();
+    const missing=validateNoComments();
+    if(unanswered>0 || missing>0){ alert('Please resolve before submitting.'); return; }
+
+    const selectedAgentId=document.getElementById('agent-select').value;
+    const ag = agents.find(a=>String(a.id)===String(selectedAgentId));
+    const agentName=ag?ag.name:'';
+    const ticketNumber=document.getElementById('ticket-number').value.trim();
+    const channel=document.getElementById('channel').value;
+    const date=document.getElementById('date').value;
+    const overallComments=document.getElementById('overall-comments').value;
+
+    const criteriaScores=[];
+    document.querySelectorAll('.item').forEach(item=>{
+      const qText=item.querySelector('.q')?.childNodes[0]?.textContent?.trim() || '';
+      const yes=!!item.querySelector('.btn.yes.selected');
+      const na =!!item.querySelector('.btn.na.selected');
+      const yesBtn=item.querySelector('.btn.yes');
+      const w=parseInt(yesBtn?.getAttribute('data-weight'))||0;
+      const comments=(item.querySelector('.comments')?.value)||'';
+      const isCritical=item.classList.contains('critical');
+      const sectionName=item.getAttribute('data-section');
+      criteriaScores.push({name:qText,weight:w,passed:yes,isNA:na,isCritical,comments,section:sectionName});
+    });
+
+    const sections={};
+    document.querySelectorAll('.section').forEach(s=>{
+      const key=s.getAttribute('data-section');
+      const title=s.querySelector('.section-title')?s.querySelector('.section-title').textContent:key;
+      sections[key]={name:title,criteria:[],score:0,maximum:0,percentage:0};
+    });
+    criteriaScores.forEach(c=>{ if(sections[c.section]) sections[c.section].criteria.push(c); });
+    for(const k in sections){
+      let st=0, sm=0; (sections[k].criteria||[]).forEach(c=>{ if(!c.isNA){ sm+=c.weight; if(c.passed) st+=c.weight; } });
+      sections[k].score=st; sections[k].maximum=sm; sections[k].percentage=sm>0?(st/sm*100):0;
+    }
+
+    let total=0;
+    if(!autoFailed){ criteriaScores.forEach(c=>{ if(!c.isNA && c.passed) total+=c.weight; }); }
+    const evaluation={
+      id: crypto.randomUUID(),
+      agentName,agentId:selectedAgentId,ticketNumber,channel,date,
+      criteriaScores,sections,
+      overallScore:autoFailed?0:total,
+      autoFailed,passed:(!autoFailed && total>=80),
+      overallComments,timestamp:new Date().toISOString(),
+      calibration: pendingCalibration.length ? {reviewers: pendingCalibration, status:'requested'} : null,
+      dispute:null
     };
 
     await createEvaluation(evaluation);
 
-    // RESET FORM
+    // Reset
     this.reset();
+    document.querySelectorAll('.btn.yes,.btn.no,.btn.na').forEach(b=>b.classList.remove('selected'));
+    document.querySelectorAll('.cwrap').forEach(w=>w.classList.remove('show'));
+    document.querySelectorAll('.comments').forEach(t=>{ t.classList.remove('required'); t.value=''; });
+    document.querySelectorAll('.item').forEach(i=>i.classList.remove('error'));
+    document.querySelectorAll('.section-score').forEach(span=>{
+      const nm=span.getAttribute('data-section');
+      if(nm==='critical'){ span.textContent='Not Started'; span.style.color=''; }
+      else{
+        const items=document.querySelectorAll('.item[data-section="'+nm+'"]'); let max=0;
+        items.forEach(i=>{ max+=parseInt(i.querySelector('.btn.yes')?.getAttribute('data-weight'))||0; });
+        span.textContent='0/'+max;
+      }
+    });
+    document.getElementById('current-score').textContent='0';
+    document.getElementById('max-score').textContent=String(computeMaxTotal()||100);
+    const pf=document.getElementById('pass-fail-indicator'); pf.textContent='FAIL'; pf.className='pf fail';
+    document.getElementById('autofail-message').style.display='none';
+    autoFailed=false; pendingCalibration=[];
+    document.getElementById('chip-unanswered').textContent='Unanswered: 0';
+    document.getElementById('chip-missing-comments').textContent='"No" w/o comment: 0';
+    document.getElementById('chip-no-count').textContent='Total "No": 0';
+    document.getElementById('submit-evaluation').disabled = true;
 
-    document
-      .querySelectorAll(".btn.yes,.btn.no,.btn.na")
-      .forEach((b) => b.classList.remove("selected"));
-
-    document
-      .querySelectorAll(".cwrap")
-      .forEach((w) => w.classList.remove("show"));
-
-    document
-      .querySelectorAll(".comments")
-      .forEach((t) => {
-        t.classList.remove("required");
-        t.value = "";
-      });
-
-    document
-      .querySelectorAll(".item")
-      .forEach((i) => i.classList.remove("error"));
-
-    state.autoFailed = false;
-
-    updateCurrentScore();
-
-    alert("Evaluation submitted successfully!");
+    alert('Evaluation submitted successfully!');
+    displayEvaluations();
+    updateDashboard();
+    sendNotificationEmail(evaluation);
+    document.querySelector('.tab[data-tab="list"]').click();
   });
 
-/* =========================================================
-   LIST DISPLAY
-   ========================================================= */
-
-function displayEvaluations() {
-  const list = document.getElementById("evaluations-list");
-  const empty = document.getElementById("no-evaluations");
-
-  if (!list) return;
-
-  list.innerHTML = "";
-
-  if (!state.evaluations.length) {
-    if (empty) empty.style.display = "block";
-    return;
-  }
-
-  if (empty) empty.style.display = "none";
-
-  state.evaluations
-    .slice()
-    .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
-    .forEach((ev) => {
-      const card = document.createElement("div");
-      card.className = "card";
-
-      const badge = ev.passed
-        ? '<span class="pf pass">PASS</span>'
-        : '<span class="pf fail">FAIL</span>';
-
-      card.innerHTML = `
-        <div class="card-b">
-          <h4 style="margin:0 0 6px 0">
-            ${escapeHtml(ev.agent_name)} 
-            - ${new Date(ev.date).toLocaleDateString()}
-          </h4>
-
-          <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px">
-            ${badge}
-            <span class="badge">Score: ${ev.overall_score}/100</span>
-            <span class="badge">Channel: ${escapeHtml(
-              getChannelName(ev.channel)
-            )}</span>
-          </div>
-        </div>
-      `;
-
+  /* ========= LIST / DISPUTES ========= */
+  function displayEvaluations(){
+    const list=document.getElementById('evaluations-list');
+    const empty=document.getElementById('no-evaluations');
+    list.innerHTML='';
+    if(evaluations.length===0){ empty.style.display='block'; return; }
+    empty.style.display='none';
+    evaluations.slice().sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp)).forEach(ev=>{
+      const card=document.createElement('div'); card.className='card';
+      const pf= ev.passed ? '<span class="pf pass">PASS</span>' : '<span class="pf fail">FAIL</span>';
+      const auto= ev.autoFailed ? '<span class="badge crit">Auto-Failed</span>' : '';
+      const cal = ev.calibration ? '<span class="badge">Calibration: '+escapeHtml(ev.calibration.status||'')+'</span>' : '';
+      const dis = ev.dispute ? '<span class="badge" style="background:#fff7ed;border-color:#fed7aa">Dispute: '+escapeHtml(ev.dispute.status||'')+'</span>' : '';
+      card.innerHTML = '<div class="card-b">'+
+        '<h4 style="margin:0 0 4px 0">'+escapeHtml(ev.agentName)+' - '+new Date(ev.date).toLocaleDateString()+'</h4>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0">'+
+          pf+' <span class="badge">Score: '+ev.overallScore+'/100</span>'+
+          '<span class="badge">Channel: '+escapeHtml(getChannelName(ev.channel))+'</span> '+
+          auto+' '+cal+' '+dis+
+        '</div>'+
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">'+
+          '<button class="ghost view-details" data-id="'+ev.id+'">View Details</button>'+
+          '<button class="ghost notify-about-evaluation" data-id="'+ev.id+'">Send Notification</button>'+
+          '<button class="ghost dispute-eval" data-id="'+ev.id+'">Dispute</button>'+
+          '<button class="ghost delete-evaluation" style="background:#fff1f1;border-color:#ffd1d1" data-id="'+ev.id+'">Delete</button>'+
+        '</div>'+
+      '</div>';
       list.appendChild(card);
     });
-}
-/* =========================================================
-   DASHBOARD
-   ========================================================= */
-
-function updateDashboard() {
-  const total = state.evaluations.length;
-
-  const kpi = document.getElementById("kpi-evals");
-  if (kpi) kpi.textContent = total;
-
-  const passedCount = state.evaluations.filter((e) => e.passed).length;
-  const passRate = total ? (passedCount / total) * 100 : 0;
-
-  const passRateEl = document.getElementById("pass-rate");
-  if (passRateEl) passRateEl.textContent = passRate.toFixed(1) + "%";
-
-  const avg =
-    total > 0
-      ? state.evaluations.reduce(
-          (sum, e) => sum + (Number(e.overall_score) || 0),
-          0
-        ) / total
-      : 0;
-
-  const avgEl = document.getElementById("avg-score");
-  if (avgEl) avgEl.textContent = avg.toFixed(1) + "%";
-}
-
-/* =========================================================
-   AGENTS (SUPABASE)
-   ========================================================= */
-
-async function fetchAgents() {
-  try {
-    const { data, error } = await sb
-      .from("agents")
-      .select("*")
-      .order("created_at", { ascending: false });
-
-    if (error) throw error;
-
-    state.agents = data || [];
-    displayAgents();
-    updateAgentDropdown();
-  } catch (err) {
-    console.error("[agents] fetch error:", err);
   }
+
+  document.getElementById('cancel-eval-dispute').addEventListener('click',function(){
+    document.getElementById('eval-dispute-backdrop').classList.remove('open');
+    disputeEvalId=null;
+  });
+  document.getElementById('save-eval-dispute').addEventListener('click', async function () {
+    const reason = document.getElementById('dispute-reason').value.trim();
+    if (!reason) { alert('Please add a reason.'); return; }
+
+    try {
+      const { data, error } = await sb
+  .from('evaluations')
+  .update({ dispute: { status: 'open', reason, thread: [] } })
+  .eq('id', disputeEvalId)
+  .select()
+  .single();
+      if (error) throw error;
+
+      const idx = evaluations.findIndex(e => e.id === disputeEvalId);
+      if (idx > -1) evaluations[idx].dispute = data.dispute;
+
+      document.getElementById('eval-dispute-backdrop').classList.remove('open');
+      displayEvaluations();
+      toast('Dispute submitted');
+    } catch (err) {
+      console.error('[dispute] update failed:', err);
+      alert('Failed to submit dispute: ' + (err?.message || err));
+    }
+  });
+
+function updateDisputeBadge(){
+  const open = evaluations.filter(e => e.dispute && e.dispute.status !== 'resolved').length;
+  const badge = document.getElementById('dispute-badge');
+  if (!badge) return;
+  badge.textContent = open;
+  badge.style.display = open ? 'inline-block' : 'none';
 }
 
-async function createAgent({ name, email, team, position }) {
-  try {
-    const { data, error } = await sb
-      .from("agents")
-      .insert([{ name, email, team, position }])
-      .select()
-      .single();
+function displayDisputes(){
+  const list = document.getElementById('disputes-list');
+  const empty = document.getElementById('no-disputes');
+  list.innerHTML = '';
 
-    if (error) throw error;
+  const disputes = evaluations.filter(e => e.dispute);
 
-    state.agents.unshift(data);
-    displayAgents();
-    updateAgentDropdown();
-  } catch (err) {
-    console.error("[agents] create error:", err);
+  if (!disputes.length){
+    empty.style.display = 'block';
+    return;
   }
+  empty.style.display = 'none';
+
+  disputes.forEach(ev => {
+    const card = document.createElement('div');
+    card.className = 'card';
+
+    card.innerHTML = `
+      <div class="card-b">
+        <strong>${escapeHtml(ev.agentName)}</strong>
+        <div class="hint">${new Date(ev.date).toLocaleDateString()} • ${getChannelName(ev.channel)}</div>
+
+        <p style="margin:8px 0"><strong>Reason:</strong> ${escapeHtml(ev.dispute.reason)}</p>
+
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="ghost view-details" data-id="${ev.id}">View Evaluation</button>
+          <button class="ghost resolve-dispute" data-id="${ev.id}" data-outcome="accepted">Accept</button>
+          <button class="ghost resolve-dispute" data-id="${ev.id}" data-outcome="rejected">Reject</button>
+        </div>
+      </div>
+    `;
+    list.appendChild(card);
+  });
 }
+  /* ========= DASHBOARD ========= */
+  function updateDashboard(){
+  // Total evaluations
+  const total = evaluations.length;
+  document.getElementById('kpi-evals').textContent = total;
 
-async function removeAgent(id) {
-  try {
-    const { error } = await sb.from("agents").delete().eq("id", id);
-    if (error) throw error;
+  // Pass rate
+  const passedCount = evaluations.filter(e=>e.passed).length;
+  const passRate = total ? (passedCount/total*100) : 0;
+  document.getElementById('pass-rate').textContent = passRate.toFixed(1) + '%';
+  document.getElementById('pass-count').textContent = passedCount;
+  document.getElementById('donut-pass').style.setProperty('--p', (passRate*3.6).toFixed(1)+'deg');
 
-    state.agents = state.agents.filter((a) => a.id !== id);
-    displayAgents();
-    updateAgentDropdown();
-  } catch (err) {
-    console.error("[agents] delete error:", err);
+  // Average score
+  const avg = total ? (evaluations.reduce((s,e)=>s+(Number(e.overallScore)||0),0)/total) : 0;
+  document.getElementById('avg-score').textContent = avg.toFixed(1) + '%';
+  document.getElementById('donut-avg').style.setProperty('--p', (avg*3.6).toFixed(1)+'deg');
+
+  // Auto-fail rate
+  const autoCount = evaluations.filter(e=>e.autoFailed).length;
+  const autoRate = total ? (autoCount/total*100) : 0;
+  document.getElementById('auto-rate').textContent = autoRate.toFixed(1) + '%';
+  document.getElementById('auto-count').textContent = autoCount;
+  document.getElementById('donut-auto').style.setProperty('--p', (autoRate*3.6).toFixed(1)+'deg');
+
+  // Recent evaluations (keep your existing render but target this container)
+  const recent = document.getElementById('recent-evaluations');
+  recent.innerHTML = '';
+  const rows=[...evaluations].sort((a,b)=>new Date(b.timestamp)-new Date(a.timestamp)).slice(0,5);
+  if(rows.length===0){
+    recent.innerHTML = '<p class="smallnote">No evaluations yet.</p>';
+  } else {
+    rows.forEach(ev=>{
+      const badge= ev.passed
+        ? '<span class="pf pass" style="font-size:12px;padding:2px 6px">PASS</span>'
+        : '<span class="pf fail" style="font-size:12px;padding:2px 6px">FAIL</span>';
+      const line=document.createElement('div');
+      line.innerHTML =
+        '<div style="display:flex;justify-content:space-between;gap:10px;align-items:center;padding:10px 0;border-bottom:1px solid var(--border)">' +
+          '<div><strong>'+escapeHtml(ev.agentName||'')+'</strong><div class="smallnote">'+new Date(ev.date).toLocaleDateString()+'</div></div>' +
+          '<div style="text-align:right"><div style="font-weight:900">'+(ev.overallScore||0)+'/100</div>'+badge+'</div>' +
+        '</div>';
+      recent.appendChild(line);
+    });
   }
-}
 
-function displayAgents() {
-  const list = document.getElementById("agents-list");
-  const empty = document.getElementById("no-agents");
+  // Questions table (top 6 worst pass-rate criteria)
+  const tbody = document.getElementById('line-items');
+  tbody.innerHTML = '';
 
-  if (!list) return;
-
-  list.innerHTML = "";
-
-  if (!state.agents.length) {
-    if (empty) empty.style.display = "block";
+  if(total === 0){
+    tbody.innerHTML = '<tr><td colspan="3" class="smallnote">No data yet.</td></tr>';
     return;
   }
 
-  if (empty) empty.style.display = "none";
+  // build per-criterion stats
+  const stat = {}; // name -> {pass,count}
+  evaluations.forEach(ev=>{
+    (ev.criteriaScores||[]).forEach(c=>{
+      if(c.isNA) return;
+      const name = c.name || 'Unknown';
+      if(!stat[name]) stat[name] = {pass:0,count:0};
+      stat[name].count += 1;
+      if(c.passed) stat[name].pass += 1;
+    });
+  });
 
-  state.agents.forEach((a) => {
-    const item = document.createElement("div");
-    item.className = "card";
+  const rowsData = Object.keys(stat).map(name=>{
+    const s = stat[name];
+    const rate = s.count ? (s.pass/s.count*100) : 0;
+    return { name, count: s.count, rate };
+  }).sort((a,b)=>a.rate-b.rate).slice(0,6);
 
-    item.innerHTML = `
-      <div class="card-b" style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-          <div style="font-weight:800">${escapeHtml(a.name)}</div>
-          <div class="hint">${escapeHtml(a.position)} - ${escapeHtml(
-      a.team
-    )}</div>
-          <div class="hint">${escapeHtml(a.email)}</div>
-        </div>
-        <button class="ghost delete-agent" data-id="${a.id}">Delete</button>
-      </div>
-    `;
-
-    item
-      .querySelector(".delete-agent")
-      .addEventListener("click", () => removeAgent(a.id));
-
-    list.appendChild(item);
+  rowsData.forEach(r=>{
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>'+escapeHtml(r.name)+'</td>' +
+      '<td>'+r.count+'</td>' +
+      '<td>'+r.rate.toFixed(1)+'%</td>';
+    tbody.appendChild(tr);
   });
 }
 
-function updateAgentDropdown() {
-  const sel = document.getElementById("agent-select");
-  if (!sel) return;
+  /* ========= REPORTS ========= */
+  (function ensureTooltip(){
+    if (document.querySelector('.qms-tooltip')) return;
+    const t = document.createElement('div');
+    t.className = 'qms-tooltip';
+    document.body.appendChild(t);
+  })();
 
-  sel.innerHTML = '<option value="">Select an Agent</option>';
+  function showTip(text, x, y){
+    const tip = document.querySelector('.qms-tooltip');
+    if (!tip) return;
+    tip.textContent = text;
+    tip.style.left = x + 'px';
+    tip.style.top = y + 'px';
+    tip.style.opacity = '1';
+  }
+  function hideTip(){
+    const tip = document.querySelector('.qms-tooltip');
+    if (tip) tip.style.opacity = '0';
+  }
 
-  state.agents.forEach((a) => {
-    const opt = document.createElement("option");
-    opt.value = a.id;
-    opt.textContent = a.name;
-    sel.appendChild(opt);
+  function mountYAxis(container, ticks = [100, 75, 50, 25, 0]) {
+    let axis = container.querySelector('.y-axis');
+    if (!axis) {
+      axis = document.createElement('div');
+      axis.className = 'y-axis';
+      container.appendChild(axis);
+    }
+    axis.innerHTML = '';
+    ticks.forEach(v=>{
+      const d = document.createElement('div');
+      d.textContent = v;
+      axis.appendChild(d);
+    });
+
+    let grid = container.querySelector('.chart-grid');
+    if (!grid) {
+      grid = document.createElement('div');
+      grid.className = 'chart-grid';
+      container.appendChild(grid);
+    }
+  }
+
+  function renderBarChart(el, data, opts){
+    const { max, showValues, animate, valueFmt = (n)=>String(n), labelFmt=(s)=>s } = opts;
+    el.innerHTML = '';
+    mountYAxis(el.parentElement, [max, Math.round(max*0.75), Math.round(max*0.5), Math.round(max*0.25), 0]);
+
+    el.style.minWidth = Math.max(520, data.length * 64) + 'px';
+
+    data.forEach(item=>{
+      const pct = max ? Math.max(0, Math.min(1, item.value / max)) : 0;
+      const fallbackHeight = (280 - 26);
+      const chartHeight = el.clientHeight || fallbackHeight;
+      const h = Math.round(pct * chartHeight);
+
+      const bar = document.createElement('div');
+      bar.className = 'bar';
+      bar.style.setProperty('--h', (animate ? 0 : h) + 'px');
+
+      const val = document.createElement('div');
+      val.className = 'val';
+      val.textContent = showValues ? valueFmt(item.value) : '';
+      bar.appendChild(val);
+
+      const lbl = document.createElement('div');
+      lbl.className = 'lbl';
+      lbl.textContent = labelFmt(item.label);
+      bar.appendChild(lbl);
+
+      bar.addEventListener('mousemove', (e)=>{
+        showTip(`${item.label}: ${valueFmt(item.value)}`, e.clientX, e.clientY);
+      });
+      bar.addEventListener('mouseleave', hideTip);
+
+      el.appendChild(bar);
+      requestAnimationFrame(()=> bar.style.setProperty('--h', h + 'px'));
+    });
+
+    [...el.querySelectorAll('.bar')].forEach(b=>{
+      b.style.height = getComputedStyle(b).getPropertyValue('--h');
+    });
+  }
+
+  function renderTrendAsBars(el, data, { animate }){
+    el.innerHTML = '';
+    mountYAxis(el.parentElement, [100, 75, 50, 25, 0]);
+    el.style.minWidth = Math.max(520, data.length * 64) + 'px';
+    renderBarChart(el, data, {
+      max: 100,
+      showValues: true,
+      animate,
+      valueFmt: (n)=> (Number.isFinite(n) ? n.toFixed(1) : '0.0')
+    });
+  }
+
+  function elById(id){ return document.getElementById(id); }
+
+  document.getElementById('apply-filters').addEventListener('click', generateReports);
+  document.getElementById('criteria-sort')?.addEventListener('change', generateReports);
+  document.getElementById('agent-sort')?.addEventListener('change', generateReports);
+  document.getElementById('toggle-values')?.addEventListener('change', generateReports);
+  document.getElementById('toggle-animate')?.addEventListener('change', generateReports);
+
+  function sortData(data, sort){
+    const copy = data.slice();
+    if (sort === 'desc') return copy.sort((a,b)=>b.value-a.value);
+    if (sort === 'asc')  return copy.sort((a,b)=>a.value-b.value);
+    if (sort === 'alpha')return copy.sort((a,b)=>a.label.localeCompare(b.label));
+    return copy;
+  }
+
+  function generateReports(){
+    const dateRange=document.getElementById('date-range').value;
+    const agentFilter=document.getElementById('agent-filter').value;
+    const showValues = !!document.getElementById('toggle-values')?.checked;
+    const animate = !!document.getElementById('toggle-animate')?.checked;
+
+    let filtered=[...evaluations];
+    if(dateRange!=='all'){
+      const now=new Date(); let start;
+      if(dateRange==='month'){ start=new Date(now.getFullYear(), now.getMonth(), 1); }
+      else if(dateRange==='week'){ const day=now.getDay(); const diff=now.getDate()-day+(day===0?-6:1); start=new Date(now.getFullYear(), now.getMonth(), diff); }
+      filtered=filtered.filter(ev=>new Date(ev.date)>=start);
+    }
+    if(agentFilter!=='all'){ filtered=filtered.filter(ev=>String(ev.agentId)===String(agentFilter)); }
+
+    buildCriteriaChart(filtered, { showValues, animate });
+    buildAgentChart(filtered, { showValues, animate });
+    buildTrendChart(filtered, { animate });
+  }
+
+  function buildCriteriaChart(filtered, { showValues, animate }){
+    const container = elById('criteria-chart');
+    container.innerHTML='';
+    if(filtered.length===0){
+      container.innerHTML='<p class="hint">No data available for the selected filters.</p>';
+      return;
+    }
+    const names=new Set();
+    filtered.forEach(ev=>ev.criteriaScores.forEach(c=>names.add(c.name)));
+    let data = [...names].map(name=>{
+      let passes=0,count=0;
+      filtered.forEach(ev=>{
+        const c=ev.criteriaScores.find(x=>x.name===name);
+        if(c){ if(!c.isNA){ count++; if(c.passed) passes++; } }
+      });
+      const rate = count>0 ? (passes/count*100) : 0;
+      return { label: name, value: rate };
+    });
+    const sort = document.getElementById('criteria-sort')?.value || 'desc';
+    data = sortData(data, sort);
+    renderBarChart(container, data, {
+      max: 100,
+      showValues,
+      animate,
+      valueFmt: (n)=> (Number.isFinite(n) ? n.toFixed(1)+'%' : '0%'),
+      labelFmt: (s)=> s.length>14 ? (s.slice(0,12)+'…') : s
+    });
+  }
+
+  function buildAgentChart(filtered, { showValues, animate }){
+    const container = elById('agent-chart');
+    container.innerHTML='';
+    if(filtered.length===0){
+      container.innerHTML='<p class="hint">No data available for the selected filters.</p>';
+      return;
+    }
+    const scores={};
+    filtered.forEach(ev=>{
+      if(!(ev.agentName in scores)) scores[ev.agentName]={total:0,count:0};
+      scores[ev.agentName].total += ev.overallScore;
+      scores[ev.agentName].count += 1;
+    });
+    let data = Object.keys(scores).map(name=>{
+      const avg = scores[name].total / scores[name].count;
+      return { label: name, value: avg };
+    });
+    const sort = document.getElementById('agent-sort')?.value || 'desc';
+    data = sortData(data, sort);
+    renderBarChart(container, data, {
+      max: 100,
+      showValues,
+      animate,
+      valueFmt: (n)=> (Number.isFinite(n) ? n.toFixed(1) : '0.0'),
+      labelFmt: (s)=> s.split(' ')[0]
+    });
+  }
+
+  function buildTrendChart(filtered, { animate }){
+    const container = elById('trend-chart');
+    container.innerHTML='';
+    if(filtered.length===0){
+      container.innerHTML='<p class="hint">No data available for the selected filters.</p>';
+      return;
+    }
+    const monthly={};
+    filtered.forEach(ev=>{
+      const d=new Date(ev.date);
+      const key=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+      if(!monthly[key]) monthly[key]={total:0,passes:0,count:0,display:d.toLocaleString('default',{month:'short'})+' '+d.getFullYear()};
+      monthly[key].total+=ev.overallScore; if(ev.passed) monthly[key].passes++; monthly[key].count++;
+    });
+    const data = Object.keys(monthly).sort().map(k=>{
+      const m = monthly[k];
+      const avg = m.total / m.count;
+      return { label: m.display, value: avg };
+    });
+    renderTrendAsBars(container, data, { animate });
+  }
+
+  // Re-render charts on resize (debounced)
+  let _resizeTimer=null;
+  window.addEventListener('resize', () => {
+    clearTimeout(_resizeTimer);
+    _resizeTimer = setTimeout(() => {
+      if (document.getElementById('reports-tab').style.display !== 'none') {
+        generateReports();
+      }
+    }, 120);
   });
-}
 
-/* =========================================================
-   EMAIL NOTIFICATIONS
-   ========================================================= */
-
-function loadNotificationSettings() {
-  const emailInput = document.getElementById("team-lead-email");
-  const notifyCheckbox = document.getElementById("notify-agents");
-
-  if (emailInput)
-    emailInput.value = state.notificationSettings.teamLeadEmail || "";
-
-  if (notifyCheckbox)
-    notifyCheckbox.checked =
-      !!state.notificationSettings.notifyAgents;
-}
-
-async function sendEmail(to, templateId, evaluation, htmlBody) {
-  if (!window.emailjs) throw new Error("EmailJS not loaded");
-
-  return emailjs.send("service_iirmd95", templateId, {
-    to_email: to,
-    agent_name: evaluation.agent_name,
-    message: htmlBody,
+  /* ========= EXPORT CSV ========= */
+  document.getElementById('export-csv').addEventListener('click',function(){
+    if(evaluations.length===0){ alert('No evaluations to export.'); return; }
+    let csv='Agent Name,Date,Channel,Ticket Number,Overall Score,Pass/Fail,Auto-Failed,Overall Comments\n';
+    evaluations.forEach(ev=>{
+      const escaped=ev.overallComments?('"'+ev.overallComments.replace(/"/g,'""')+'"'):'';
+      csv+=[
+        '"'+ev.agentName.replace(/"/g,'""')+'"',
+        new Date(ev.date).toLocaleDateString(),
+        getChannelName(ev.channel),
+        '"'+String(ev.ticketNumber||'').replace(/"/g,'""')+'"',
+        ev.overallScore,
+        ev.passed?'PASS':'FAIL',
+        ev.autoFailed?'YES':'NO',
+        escaped
+      ].join(',')+'\n';
+    });
+    const blob=new Blob([csv],{type:'text/csv'});
+    const url=window.URL.createObjectURL(blob);
+    const a=document.createElement('a'); a.setAttribute('hidden',''); a.href=url; a.download='qms_evaluations.csv';
+    document.body.appendChild(a); a.click(); window.URL.revokeObjectURL(url); document.body.removeChild(a);
   });
+
+  /* ========= EMAIL NOTIFICATIONS ========= */
+  function loadNotificationSettings(){
+    document.getElementById('team-lead-email').value=notificationSettings.teamLeadEmail||'';
+    document.getElementById('notify-agents').checked=!!notificationSettings.notifyAgents;
+  }
+  document.getElementById('save-notification-settings').addEventListener('click',function(){
+    notificationSettings.teamLeadEmail=document.getElementById('team-lead-email').value;
+    notificationSettings.notifyAgents=document.getElementById('notify-agents').checked;
+    localStorage.setItem('qms_notification_settings', JSON.stringify(notificationSettings));
+    alert('Notification settings saved!');
+  });
+
+  function sendNotificationEmail(evaluation){
+    const teamLeadEmail=notificationSettings.teamLeadEmail;
+    if(!teamLeadEmail){
+      if(confirm('No team lead email configured. Set it now?')){
+        document.querySelector('.tab[data-tab="settings"]').click();
+        document.getElementById('team-lead-email').focus();
+      }
+      return;
+    }
+    let agentEmail='';
+    if(notificationSettings.notifyAgents){
+      const ag=agents.find(a=>String(a.id)===String(evaluation.agentId)); if(ag && ag.email) agentEmail=ag.email;
+    }
+    const subject='New QMS Evaluation: '+evaluation.agentName;
+    let autoFailMsg='';
+    if(evaluation.autoFailed){
+      const failed=evaluation.criteriaScores.filter(c=>c.isCritical && !c.passed);
+      if(failed.length>0){ autoFailMsg='IMPORTANT: AUTO-FAIL due to failing critical item(s): '+failed.map(c=>c.name).join(', ')+'\n'; }
+    }
+    let criteriaResults='';
+    for(const key in evaluation.sections){
+      const section=evaluation.sections[key];
+      if(key==='critical'){ criteriaResults+='\n'+section.name+': '+(evaluation.autoFailed?'FAILED':'PASSED')+'\n'; }
+      else{ criteriaResults+='\n'+section.name+': '+section.score+'/'+section.maximum+' ('+section.percentage.toFixed(1)+'%)\n'; }
+      (section.criteria||[]).forEach(c=>{
+        const result=c.isNA?'N/A':(c.passed?'PASS':'FAIL'); const critical=c.isCritical?' [CRITICAL]':'';
+        criteriaResults+='- '+c.name+' ('+c.weight+' points): '+result+critical+'\n';
+        if(c.comments){ criteriaResults+='  Comments: '+c.comments+'\n'; }
+      });
+    }
+    const body=
+'A new quality evaluation has been completed:\n\n'+
+'Agent: '+evaluation.agentName+'\n'+
+'Date: '+new Date(evaluation.date).toLocaleDateString()+'\n'+
+'Score: '+evaluation.overallScore+'/100 ('+(evaluation.passed?'PASS':'FAIL')+')\n'+
+'Channel: '+getChannelName(evaluation.channel)+'\n\n'+
+autoFailMsg+'\n'+
+'Overall Comments:\n'+(evaluation.overallComments || 'None')+'\n\n'+
+'Criteria Results:\n'+criteriaResults+'\n'+
+'View the full evaluation in the QMS system.';
+    const gmailUrl='https://mail.google.com/mail/?view=cm&fs=1&to='+encodeURIComponent(teamLeadEmail)+'&su='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+    if(confirm('Open Gmail compose to notify the team lead?')){ window.open(gmailUrl,'_blank'); }
+    if(agentEmail){
+      const agentSubject='Your New Quality Evaluation';
+      const agentUrl='https://mail.google.com/mail/?view=cm&fs=1&to='+encodeURIComponent(agentEmail)+'&su='+encodeURIComponent(agentSubject)+'&body='+encodeURIComponent(body);
+      if(confirm('Also notify the agent?')){ window.open(agentUrl,'_blank'); }
+    }
+  }
+
+  /* ========= TEMPLATES ========= */
+  document.getElementById('add-criterion').addEventListener('click',function(){
+    const container=document.getElementById('template-criteria');
+    const div=document.createElement('div'); div.className='template-criterion';
+    div.style.display='flex'; div.style.gap='8px'; div.style.alignItems='center';
+    div.innerHTML='<input type="text" class="criterion-name" placeholder="Criterion Name" required>'+
+                  '<input type="number" class="criterion-weight" placeholder="Weight" min="1" max="100" value="20" required style="width:120px">'+
+                  '<button type="button" class="ghost remove-criterion">Remove</button>';
+    container.appendChild(div);
+    div.querySelector('.remove-criterion').addEventListener('click',function(){
+      if(document.querySelectorAll('.template-criterion').length>1){ container.removeChild(div); updateTotalWeight(); }
+      else { alert('You must have at least one criterion.'); }
+    });
+    div.querySelector('.criterion-weight').addEventListener('input',updateTotalWeight);
+    updateTotalWeight();
+  });
+  function updateTotalWeight(){
+    const inputs=document.querySelectorAll('.criterion-weight'); let total=0;
+    inputs.forEach(i=>{ total+=parseInt(i.value)||0; });
+    const el=document.getElementById('weight-total'); el.textContent='Total Weight: '+total+'/100';
+    el.style.color = (total===100)?'green':'red';
+  }
+  document.querySelectorAll('.remove-criterion').forEach(btn=>{
+    btn.addEventListener('click',function(){
+      if(document.querySelectorAll('.template-criterion').length>1){
+        const c=this.parentElement; c.parentElement.removeChild(c); updateTotalWeight();
+      }else{ alert('You must have at least one criterion.'); }
+    });
+  });
+  document.querySelectorAll('.criterion-weight').forEach(i=>i.addEventListener('input',updateTotalWeight));
+
+  document.getElementById('template-form').addEventListener('submit',function(e){
+    e.preventDefault();
+    const name=document.getElementById('template-name').value;
+    const description=document.getElementById('template-description').value;
+    const criteria=[]; let totalWeight=0;
+    document.querySelectorAll('.template-criterion').forEach(c=>{
+      const n=c.querySelector('.criterion-name').value;
+      const w=parseInt(c.querySelector('.criterion-weight').value);
+      criteria.push({name:n,weight:w}); totalWeight+=w;
+    });
+    if(criteria.length===0){ alert('Please add at least one criterion.'); return; }
+    if(totalWeight!==100){ alert('The total weight must equal 100 points. Current total: '+totalWeight); return; }
+    const template={id:Date.now().toString(),name,description,criteria,created:new Date().toISOString()};
+    templates.push(template); localStorage.setItem('qms_templates', JSON.stringify(templates));
+    this.reset();
+    document.getElementById('template-criteria').innerHTML=
+      '<div class="template-criterion" style="display:flex;gap:8px;align-items:center">'+
+      '<input type="text" class="criterion-name" placeholder="Criterion Name" required>'+
+      '<input type="number" class="criterion-weight" placeholder="Weight" min="1" max="100" value="20" required style="width:120px">'+
+      '<button type="button" class="ghost remove-criterion">Remove</button></div>';
+    document.querySelector('.remove-criterion').addEventListener('click',function(){
+      const c=this.parentElement; if(document.querySelectorAll('.template-criterion').length>1){ c.parentElement.removeChild(c); updateTotalWeight(); }
+    });
+    document.querySelector('.criterion-weight').addEventListener('input',updateTotalWeight);
+    updateTotalWeight();
+    displayTemplates();
+    alert('Template saved successfully!');
+  });
+
+  function displayTemplates(){
+    const list=document.getElementById('templates-list');
+    const empty=document.getElementById('no-templates');
+    list.innerHTML=''; if(templates.length===0){ empty.style.display='block'; return; }
+    empty.style.display='none';
+    templates.forEach(t=>{
+      const card=document.createElement('div'); card.className='card';
+      let items=''; t.criteria.forEach(c=>{ items+='<li>'+escapeHtml(c.name)+' ('+c.weight+' pts)</li>'; });
+      card.innerHTML='<div class="card-b">'+
+        '<h4 style="margin:0 0 4px 0">'+escapeHtml(t.name)+'</h4>'+
+        '<p class="hint" style="margin:0 0 8px 0">'+escapeHtml(t.description||'No description')+'</p>'+
+        '<strong>Criteria:</strong><ul style="margin-top:6px">'+items+'</ul>'+
+        '<div style="display:flex;gap:8px;margin-top:8px">'+
+          '<button class="ghost use-template" data-id="'+t.id+'">Use Template</button>'+
+          '<button class="ghost delete-template" data-id="'+t.id+'" style="background:#fff1f1;border-color:#ffd1d1">Delete</button>'+
+        '</div>'+
+      '</div>';
+      list.appendChild(card);
+    });
+    list.querySelectorAll('.use-template').forEach(btn=>{
+      btn.addEventListener('click',function(){ useTemplate(this.getAttribute('data-id')); });
+    });
+    list.querySelectorAll('.delete-template').forEach(btn=>{
+      btn.addEventListener('click',function(){
+        if(!confirm('Delete this template?')) return;
+        const id=this.getAttribute('data-id');
+        templates=templates.filter(t=>t.id!==id);
+        localStorage.setItem('qms_templates', JSON.stringify(templates));
+        displayTemplates();
+      });
+    });
+  }
+
+  function useTemplate(templateId){
+    const template=templates.find(t=>t.id===templateId);
+    if(!template){ alert('Template not found.'); return; }
+    document.querySelector('.tab[data-tab="form"]').click();
+    const form=document.getElementById('evaluation-form');
+    form.querySelectorAll('.item').forEach(i=>i.remove());
+    document.getElementById('autofail-message').style.display='none';
+    autoFailed=false;
+
+    const firstSection=document.querySelector('.section[data-section="investigation"] .section-c');
+    template.criteria.forEach((criterion)=>{
+      const wrap=document.createElement('div'); wrap.className='item'; wrap.setAttribute('data-section','investigation');
+      const slug=criterion.name.toLowerCase().replace(/\s+/g,'-');
+      wrap.innerHTML=
+        '<div class="q">Has the agent '+escapeHtml(criterion.name.toLowerCase())+'? <span class="meta">('+criterion.weight+' points)</span></div>'+
+        '<div class="yn">'+
+          '<button type="button" class="btn yes" data-criterion="'+slug+'" data-weight="'+criterion.weight+'">Yes</button>'+
+          '<button type="button" class="btn no" data-criterion="'+slug+'" data-weight="'+criterion.weight+'">No</button>'+
+          '<button type="button" class="btn na" data-criterion="'+slug+'" data-weight="'+criterion.weight+'">N/A</button>'+
+        '</div>'+
+        '<div class="cwrap"><textarea class="comments" rows="2" placeholder="Required on No: explain..."></textarea><div class="cerr">Comment is required when selecting No.</div></div>';
+      firstSection.appendChild(wrap);
+    });
+    document.querySelectorAll('.comments').forEach(t=>t.addEventListener('input',updateSubmitState));
+    updateCurrentScore();
+    alert('Template "'+template.name+'" loaded.');
+  }
+
+  function getChannelName(channel){ const map={call:'Phone Call',chat:'Live Chat',email:'Email'}; return map[channel]||channel; }
+
+  // Agents + Evaluations (Supabase)
+  async function fetchAgents() {
+    try {
+      const { data, error } = await sb.from('agents').select('*').order('created_at', { ascending: false });
+      if (error) throw error;
+      agents = data || [];
+      displayAgents();
+      updateAgentDropdown();
+      updateAgentFilter();
+    } catch (err) {
+      console.error('[agents] fetchAgents error:', err);
+      alert('Failed to load agents: ' + (err?.message || err));
+    }
+  }
+
+  async function createAgent({ name, email, team, position }) {
+    try {
+      const { data, error } = await sb.from('agents').insert([{ name, email, team, position }]).select().single();
+      if (error) throw error;
+      agents.unshift(data);
+      displayAgents();
+      updateAgentDropdown();
+      updateAgentFilter();
+      toast('Agent added');
+      return data;
+    } catch (err) {
+      console.error('[agents] createAgent error:', err);
+      alert('Add agent failed: ' + (err?.message || err));
+      throw err;
+    }
+  }
+
+  async function removeAgent(id) {
+    try {
+      const { error } = await sb.from('agents').delete().eq('id', id);
+      if (error) throw error;
+      agents = agents.filter(a => a.id !== id);
+      displayAgents();
+      updateAgentDropdown();
+      updateAgentFilter();
+      toast('Agent deleted');
+    } catch (err) {
+      console.error('[agents] removeAgent error:', err);
+      alert('Delete failed: ' + (err?.message || err));
+    }
+  }
+
+  function displayAgents() {
+    const list = document.getElementById('agents-list');
+    const empty = document.getElementById('no-agents');
+    list.innerHTML = '';
+    if (!agents.length) { empty.style.display = 'block'; return; }
+    empty.style.display = 'none';
+    agents.forEach(a => {
+      const item = document.createElement('div');
+      item.className = 'card';
+      item.innerHTML =
+        '<div class="card-b" style="display:flex;justify-content:space-between;align-items:center">' +
+        '<div><div style="font-weight:800">' + escapeHtml(a.name || '') + '</div>' +
+        '<div class="hint">' + escapeHtml(a.position || '') + ' - ' + escapeHtml(a.team || '') + '</div>' +
+        '<div class="hint">' + escapeHtml(a.email || '') + '</div></div>' +
+        '<button class="ghost delete-agent" data-id="' + a.id + '">Delete</button>' +
+        '</div>';
+      item.querySelector('.delete-agent').addEventListener('click',()=>removeAgent(a.id));
+      list.appendChild(item);
+    });
+  }
+
+  function evalDbToUi(r) {
+    const csRaw = r.criteria_scores;
+    const criteriaScores = Array.isArray(csRaw) ? csRaw : (csRaw && typeof csRaw === 'object' ? Object.values(csRaw) : []);
+    const sections = (r.sections && typeof r.sections === 'object') ? r.sections : {};
+    return {
+      id: r.id,
+      agentId: r.agent_id || null,
+      agentName: r.agent_name || '',
+      ticketNumber: r.ticket_number || '',
+      channel: r.channel,
+      date: r.date,
+      criteriaScores,
+      sections,
+      overallScore: r.overall_score ?? 0,
+      autoFailed: !!r.auto_failed,
+      passed: !!r.passed,
+      overallComments: r.overall_comments || '',
+      timestamp: r.created_at,
+      calibration: r.calibration || null,
+      dispute: r.dispute || null
+    };
+  }
+
+  function evalUiToDb(e) {
+    return {
+       id: e.id, // ✅ ADD THIS
+      agent_id: e.agentId || null,
+      agent_name: e.agentName || '',
+      ticket_number: e.ticketNumber,
+      channel: e.channel,
+      date: e.date,
+      criteria_scores: e.criteriaScores,
+      sections: e.sections,
+      overall_score: e.overallScore,
+      auto_failed: e.autoFailed,
+      passed: e.passed,
+      overall_comments: e.overallComments,
+      calibration: e.calibration,
+      dispute: e.dispute
+    };
+  }
+
+  async function fetchEvaluations() {
+    try {
+      const { data, error } = await sb.from('evaluations').select('*').order('created_at', { ascending: false });
+      if (error) throw error;
+      evaluations = (data || []).map(evalDbToUi);
+      updateDisputeBadge();
+      displayEvaluations();
+      updateDashboard();
+      generateReports();
+    } catch (err) {
+      console.error('[evaluations] fetch error:', err);
+      alert('Failed to load evaluations: ' + (err?.message || err));
+    }
+  }
+
+  async function createEvaluation(evaluationUi) {
+    try {
+      const payload = evalUiToDb(evaluationUi);
+      const { data, error } = await sb.from('evaluations').insert([payload]).select().single();
+      if (error) throw error;
+      evaluations.unshift(evalDbToUi(data));
+      displayEvaluations();
+      updateDashboard();
+      generateReports();
+    } catch (err) {
+      console.error('[evaluations] create error (local fallback):', err);
+      evaluations.unshift({ ...evaluationUi, timestamp: new Date().toISOString() });
+      displayEvaluations();
+      updateDashboard();
+      generateReports();
+      toast('Server save failed; saved locally for now.');
+    }
+  }
+
+  async function removeEvaluation(id) {
+    try {
+      const { error } = await sb.from('evaluations').delete().eq('id', id);
+      if (error) throw error;
+      evaluations = evaluations.filter(e => e.id !== id);
+      displayEvaluations();
+      updateDashboard();
+      generateReports();
+    } catch (err) {
+      console.error('[evaluations] delete error:', err);
+      alert('Delete evaluation failed: ' + (err?.message || err));
+    }
+  }
+async function resolveDispute(id, outcome, note){
+  const ev = evaluations.find(e => e.id === id);
+  if (!ev || !ev.dispute) return;
+
+  const updated = {
+    ...ev.dispute,
+    status: 'resolved',
+    resolution: {
+      outcome,            // accepted | rejected
+      note,               // your note
+      resolved_by: 'QA Lead',
+      resolved_at: new Date().toISOString()
+    }
+  };
+
+  try {
+    const { error } = await sb
+      .from('evaluations')
+      .update({ dispute: updated })
+      .eq('id', id);
+
+    if (error) throw error;
+
+    // update UI memory
+    ev.dispute = updated;
+
+    // refresh screens + badge
+    displayDisputes();
+    displayEvaluations();
+    updateDisputeBadge();
+    toast(`Dispute ${outcome}`);
+  } catch (err) {
+    console.error('[resolveDispute] failed:', err);
+    alert('Failed to resolve dispute: ' + (err?.message || err));
+  }
 }
 
-/* =========================================================
-   INIT
-   ========================================================= */
+  function updateAgentDropdown() {
+    const sel = document.getElementById('agent-select');
+    if (!sel) return;
+    sel.innerHTML = '<option value="">Select an Agent</option>';
+    agents.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name;
+      sel.appendChild(opt);
+    });
+  }
 
-document.addEventListener("DOMContentLoaded", () => {
-  initEmailJS();
-  fetchAgents();
+  function updateAgentFilter() {
+    const sel = document.getElementById('agent-filter');
+    if (!sel) return;
+    sel.innerHTML = '<option value="all">All Agents</option>';
+    agents.forEach(a => {
+      const opt = document.createElement('option');
+      opt.value = a.id;
+      opt.textContent = a.name;
+      sel.appendChild(opt);
+    });
+  }
+
+  function toast(msg) {
+    const t = document.createElement('div');
+    t.textContent = msg;
+    t.style.position = 'fixed';
+    t.style.bottom = '20px';
+    t.style.right = '20px';
+    t.style.padding = '10px 14px';
+    t.style.border = '1px solid var(--border)';
+    t.style.background = '#fff';
+    t.style.borderRadius = '12px';
+    t.style.boxShadow = 'var(--shadow)';
+    t.style.fontWeight = '800';
+    document.body.appendChild(t);
+    setTimeout(() => t.remove(), 1400);
+  }
+
+  /* ========= MODAL SAFETY & UX ========= */
+  function closeAllModals(){
+    document.querySelectorAll('.backdrop.open').forEach(b=>b.classList.remove('open'));
+  }
+  document.addEventListener('DOMContentLoaded', () => { closeAllModals(); });
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeAllModals(); });
+  document.querySelectorAll('.backdrop').forEach(b=>{
+    b.addEventListener('click', (e) => { if (e.target === b) b.classList.remove('open'); });
+  });
+// ===== AGENT FORM SUBMIT (MISSING WIRE-UP) =====
+document.getElementById('agent-form')?.addEventListener('submit', async (e) => {
+  e.preventDefault();
+
+  const name = document.getElementById('new-agent-name')?.value.trim();
+  const email = document.getElementById('new-agent-email')?.value.trim();
+  const team = document.getElementById('new-agent-team')?.value.trim();
+  const position = document.getElementById('new-agent-position')?.value.trim();
+
+  if (!name || !email || !team || !position) {
+    alert('Please fill in all agent fields.');
+    return;
+  }
+
+  try {
+    await createAgent({ name, email, team, position });
+    e.target.reset();
+  } catch (err) {
+    // createAgent already alerts; keep this silent
+  }
+});
+
+  /* ========= INIT ========= */
+  updateAgentDropdown();
+  displayAgents();
+  displayTemplates();
+  updateAgentFilter();
   updateDashboard();
   loadNotificationSettings();
+  updateTotalWeight();
   updateCurrentScore();
-
-  const dashboardTab = document.querySelector(
-    '.tab[data-tab="dashboard"]'
-  );
-
-  if (dashboardTab) dashboardTab.click();
-});
+  fetchAgents();
+  fetchEvaluations();
+  </script>
+</body>
+</html>
       
